@@ -2983,13 +2983,19 @@ func TestSingleArgsSegmentOutput(t *testing.T) {
 	}
 }
 
+// kbpsWant recomputes the retry bitrate without constant folding so the
+// expectation stays a real (non-constant) float expression.
+func kbpsWant(current int, targetBytes, actualBytes int64) int {
+	return int(float64(current) * float64(targetBytes) / float64(actualBytes) * 0.95)
+}
+
 func TestRetryKbps(t *testing.T) {
 	// 917 kbps produced 4.4MB for a 4.0MB target.
 	got := RetryKbps(917, 4_000_000, 4_400_000)
 	if got >= 917 || got < 100 {
 		t.Fatalf("got %d", got)
 	}
-	want := int(float64(917) * 4_000_000 / 4_400_000 * 0.95)
+	want := kbpsWant(917, 4_000_000, 4_400_000)
 	if got != want {
 		t.Fatalf("got %d want %d", got, want)
 	}
