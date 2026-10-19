@@ -4084,7 +4084,7 @@ func (e *Engine) processSplit(ctx context.Context, req Request, info *media.Info
 	for i, raw := range raws {
 		lo := float64(i) / float64(len(raws)) * 100
 		hi := float64(i+1) / float64(len(raws)) * 100
-		out, changed, err := e.fitSegment(ctx, req, info, sp, raw.path, raw.start, tmpDir, 0, repair.scaled(lo, hi))
+		out, changed, err := e.fitSegment(ctx, req, info, sp, raw.path, raw.start, tmpDir, fmt.Sprintf("s%04d", i+1), 0, repair.scaled(lo, hi))
 		if err != nil {
 			return nil, fmt.Errorf("%d번째 조각 처리 실패: %w", i+1, err)
 		}
@@ -4143,8 +4143,10 @@ func (e *Engine) processSplit(ctx context.Context, req Request, info *media.Info
 // fitSegment guarantees one segment is at or below PartBytes and returns one
 // or more faststart MP4 paths in playback order, plus whether the segment had
 // to be re-encoded. start is the segment's offset in the source, used when
-// re-encoding a range.
-func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, sp *media.SplitPlan, path string, start float64, tmpDir string, depth int, rep *progressReporter) ([]string, bool, error) {
+// re-encoding a range. tag identifies the originating segment and keeps every
+// scratch file unique, otherwise re-encoded segments would overwrite each
+// other and a part could be moved twice.
+func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, sp *media.SplitPlan, path string, start float64, tmpDir, tag string, depth int, rep *progressReporter) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -4165,7 +4167,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 	var lastPath string
 	var lastInfo *media.Info
 	for attempt := 1; attempt <= maxRepairAttempts; attempt++ {
-		outPath := filepath.Join(tmpDir, fmt.Sprintf("repair-d%d-a%d.mp4", depth, attempt))
+		outPath := filepath.Join(tmpDir, fmt.Sprintf("repair-%s-d%d-a%d.mp4", tag, depth, attempt))
 		spec := RangeSpec{
 			Input: info.Path, Output: outPath,
 			Start: start, Duration: cur.Duration,
@@ -4212,7 +4214,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 		{start + half, lastInfo.Duration - half},
 	} {
 		sub := rep.scaled(float64(i)*50, float64(i+1)*50)
-		halfPath := filepath.Join(tmpDir, fmt.Sprintf("half-d%d-%d.mp4", depth, i+1))
+		halfPath := filepath.Join(tmpDir, fmt.Sprintf("half-%s-d%d-%d.mp4", tag, depth, i+1))
 		spec := RangeSpec{
 			Input: info.Path, Output: halfPath,
 			Start: seg.start, Duration: seg.dur,
@@ -4226,7 +4228,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 		if err := e.FF.Run(ctx, RangeArgs(spec), seg.dur, nil); err != nil {
 			return nil, false, err
 		}
-		parts, _, err := e.fitSegment(ctx, req, info, sp, halfPath, seg.start, tmpDir, depth+1, sub)
+		parts, _, err := e.fitSegment(ctx, req, info, sp, halfPath, seg.start, tmpDir, tag, depth+1, sub)
 		if err != nil {
 			return nil, false, err
 		}

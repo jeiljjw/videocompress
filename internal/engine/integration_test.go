@@ -115,6 +115,31 @@ func TestProcessSingleIntegration(t *testing.T) {
 	}
 }
 
+func TestProcessSingleFallsBackToSplitIntegration(t *testing.T) {
+	ff := testClient(t)
+	dir := t.TempDir()
+	// A long clip cannot meet a tiny single-file target even at 480p, so the
+	// engine must switch to splitting.
+	src := filepath.Join(dir, "long.mp4")
+	makeVideo(t, ff, src, 640, 360, 60, 700, true)
+
+	eng := New(ff, filepath.Join(dir, "tmp"))
+	res, err := eng.Process(context.Background(), Request{
+		InputPath: src, TargetBytes: 700_000, PartBytes: 500_000,
+	}, nil)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if res.Mode != media.ModeSplit || len(res.Outputs) < 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	for _, o := range res.Outputs {
+		if o.Bytes > 500_000 {
+			t.Fatalf("part %s is %d bytes", o.Path, o.Bytes)
+		}
+	}
+}
+
 func TestProcessSkipIntegration(t *testing.T) {
 	ff := testClient(t)
 	dir := t.TempDir()
@@ -138,6 +163,75 @@ func TestProcessSkipIntegration(t *testing.T) {
 	for _, en := range entries {
 		if strings.Contains(en.Name(), "_compressed") {
 			t.Fatalf("skip must not create outputs, found %s", en.Name())
+		}
+	}
+}
+
+func TestProcessSplitIntegration(t *testing.T) {
+	ff := testClient(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "series.mp4")
+	makeVideo(t, ff, src, 640, 360, 45, 600, true)
+
+	eng := New(ff, filepath.Join(dir, "tmp"))
+	res, err := eng.Process(context.Background(), Request{
+		InputPath: src, TargetBytes: 1_500_000, PartBytes: 1_200_000,
+	}, nil)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if res.Mode != media.ModeSplit {
+		t.Fatalf("mode = %s (result %+v)", res.Mode, res)
+	}
+	if len(res.Outputs) < 2 {
+		t.Fatalf("expected multiple parts, got %d", len(res.Outputs))
+	}
+	var sum float64
+	for i, o := range res.Outputs {
+		if o.Bytes > 1_200_000 {
+			t.Fatalf("part %d size %d exceeds part target", i+1, o.Bytes)
+		}
+		if _, err := os.Stat(o.Path); err != nil {
+			t.Fatalf("part %d missing: %v", i+1, err)
+		}
+		if !strings.Contains(filepath.Base(o.Path), "_part") {
+			t.Fatalf("part %d name = %q", i+1, o.Path)
+		}
+		sum += o.Duration
+	}
+	if sum < 40 || sum > 50 {
+		t.Fatalf("part durations sum to %.1fs", sum)
+	}
+}
+
+// The part limit here is below what a single-quality part can produce, so the
+// engine must repair and/or halve segments. The assertions are path-agnostic:
+// whatever route it takes, every part must fit and the mode must be split.
+func TestProcessSplitRepairAndHalveIntegration(t *testing.T) {
+	ff := testClient(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "tough.mp4")
+	makeVideo(t, ff, src, 640, 360, 30, 600, true)
+
+	eng := New(ff, filepath.Join(dir, "tmp"))
+	res, err := eng.Process(context.Background(), Request{
+		InputPath: src, TargetBytes: 400_000, PartBytes: 260_000,
+	}, nil)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if res.Mode != media.ModeSplit {
+		t.Fatalf("mode = %s", res.Mode)
+	}
+	if !res.LowQuality {
+		t.Fatal("expected LowQuality to be set for a repaired split")
+	}
+	if len(res.Outputs) < 2 {
+		t.Fatalf("expected at least 2 parts, got %d", len(res.Outputs))
+	}
+	for i, o := range res.Outputs {
+		if o.Bytes > 260_000 {
+			t.Fatalf("part %d size %d exceeds 260000", i+1, o.Bytes)
 		}
 	}
 }
