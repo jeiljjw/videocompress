@@ -10,18 +10,26 @@
 
 # Wails
 /build/bin/
-/build/windows/
 build/*.syso
+!build/windows/*.exe
 
 # Frontend
 frontend/node_modules/
-frontend/dist/
+# Keep the directory present (go:embed needs at least one file) while ignoring
+# build output. The directory itself must not be ignored, or git never descends
+# into it and the negation below has no effect.
+frontend/dist/*
+!frontend/dist/.gitkeep
 frontend/wailsjs/
 
 # Local app data
 *.log
 .tmp/
 temp/
+
+# Scratch
+.superpowers/
+.wails-scaffold/
 
 # Editors / OS
 .vscode/

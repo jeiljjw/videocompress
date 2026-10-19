@@ -122,7 +122,10 @@ require github.com/wailsapp/wails/v2 v2.11.0
 `.gitignore`에 추가(기존 규칙 유지):
 ```
 frontend/node_modules/
-frontend/dist/
+# Keep the directory present (go:embed needs at least one file) while ignoring
+# build output. The directory itself must not be ignored, or git never descends
+# into it and the negation below has no effect.
+frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/wailsjs/
 build/bin/
@@ -168,10 +171,21 @@ bin/
 `frontend/vite.config.ts`:
 ```ts
 import { defineConfig } from 'vitest/config'
+import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Vite empties dist/ on every build, which would delete the committed
+// frontend/dist/.gitkeep that `//go:embed all:frontend/dist` depends on.
+// Re-emit the marker as part of the bundle so it always exists after a build.
+const keepDistMarker: Plugin = {
+  name: 'keep-dist-marker',
+  generateBundle() {
+    this.emitFile({ type: 'asset', fileName: '.gitkeep', source: '' })
+  },
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), keepDistMarker],
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
@@ -183,6 +197,15 @@ export default defineConfig({
 `frontend/src/test-setup.ts`:
 ```ts
 import '@testing-library/jest-dom/vitest'
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+// Vitest is configured without global test APIs, so Testing Library's automatic
+// cleanup is not registered for us. Without this, each render() leaves its DOM
+// behind and later queries in the same file match multiple elements.
+afterEach(() => {
+  cleanup()
+})
 ```
 
 `frontend/tsconfig.json` (템플릿을 아래로 교체):
@@ -288,6 +311,23 @@ func main() {
 	fmt.Printf("vc %s\n", version)
 	os.Exit(0)
 }
+```
+
+`frontend/src/App.tsx`(템플릿은 생성된 바인딩 `../wailsjs/go/main/App`의 `Greet`을
+import하므로 스텁 `app.go`에는 존재하지 않아 `tsc`가 실패한다. Task 16에서 최종 교체):
+
+```tsx
+// Task 1 placeholder. Replaced with the real UI in Task 16.
+function App() {
+  return (
+    <div id="App">
+      <h1>VideoCompress</h1>
+      <p>스캐폴딩 준비 완료</p>
+    </div>
+  )
+}
+
+export default App
 ```
 
 `frontend/dist/.gitkeep` 파일을 만들어 embed 디렉터리를 보장한다.
@@ -2606,7 +2646,8 @@ func TestVerifySingle(t *testing.T) {
 }
 
 func TestVerifyParts(t *testing.T) {
-	src := &media.Info{Duration: 180, Width: 1920, Height: 1080}
+	// Source duration must equal the sum of the parts for the happy path.
+	src := &media.Info{Duration: 90, Width: 1920, Height: 1080}
 	parts := []*media.Info{
 		{SizeBytes: 3_900_000, Duration: 30, Width: 1280, Height: 720, StartTime: 0},
 		{SizeBytes: 3_900_000, Duration: 30, Width: 1280, Height: 720, StartTime: 0},
@@ -2965,13 +3006,19 @@ func TestSingleArgsSegmentOutput(t *testing.T) {
 	}
 }
 
+// kbpsWant recomputes the retry bitrate without constant folding so the
+// expectation stays a real (non-constant) float expression.
+func kbpsWant(current int, targetBytes, actualBytes int64) int {
+	return int(float64(current) * float64(targetBytes) / float64(actualBytes) * 0.95)
+}
+
 func TestRetryKbps(t *testing.T) {
 	// 917 kbps produced 4.4MB for a 4.0MB target.
 	got := RetryKbps(917, 4_000_000, 4_400_000)
 	if got >= 917 || got < 100 {
 		t.Fatalf("got %d", got)
 	}
-	want := int(float64(917) * 4_000_000 / 4_400_000 * 0.95)
+	want := kbpsWant(917, 4_000_000, 4_400_000)
 	if got != want {
 		t.Fatalf("got %d want %d", got, want)
 	}
@@ -4060,7 +4107,7 @@ func (e *Engine) processSplit(ctx context.Context, req Request, info *media.Info
 	for i, raw := range raws {
 		lo := float64(i) / float64(len(raws)) * 100
 		hi := float64(i+1) / float64(len(raws)) * 100
-		out, changed, err := e.fitSegment(ctx, req, info, sp, raw.path, raw.start, tmpDir, 0, repair.scaled(lo, hi))
+		out, changed, err := e.fitSegment(ctx, req, info, sp, raw.path, raw.start, tmpDir, fmt.Sprintf("s%04d", i+1), 0, repair.scaled(lo, hi))
 		if err != nil {
 			return nil, fmt.Errorf("%d번째 조각 처리 실패: %w", i+1, err)
 		}
@@ -4119,8 +4166,10 @@ func (e *Engine) processSplit(ctx context.Context, req Request, info *media.Info
 // fitSegment guarantees one segment is at or below PartBytes and returns one
 // or more faststart MP4 paths in playback order, plus whether the segment had
 // to be re-encoded. start is the segment's offset in the source, used when
-// re-encoding a range.
-func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, sp *media.SplitPlan, path string, start float64, tmpDir string, depth int, rep *progressReporter) ([]string, bool, error) {
+// re-encoding a range. tag identifies the originating segment and keeps every
+// scratch file unique, otherwise re-encoded segments would overwrite each
+// other and a part could be moved twice.
+func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, sp *media.SplitPlan, path string, start float64, tmpDir, tag string, depth int, rep *progressReporter) ([]string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -4141,7 +4190,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 	var lastPath string
 	var lastInfo *media.Info
 	for attempt := 1; attempt <= maxRepairAttempts; attempt++ {
-		outPath := filepath.Join(tmpDir, fmt.Sprintf("repair-d%d-a%d.mp4", depth, attempt))
+		outPath := filepath.Join(tmpDir, fmt.Sprintf("repair-%s-d%d-a%d.mp4", tag, depth, attempt))
 		spec := RangeSpec{
 			Input: info.Path, Output: outPath,
 			Start: start, Duration: cur.Duration,
@@ -4188,7 +4237,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 		{start + half, lastInfo.Duration - half},
 	} {
 		sub := rep.scaled(float64(i)*50, float64(i+1)*50)
-		halfPath := filepath.Join(tmpDir, fmt.Sprintf("half-d%d-%d.mp4", depth, i+1))
+		halfPath := filepath.Join(tmpDir, fmt.Sprintf("half-%s-d%d-%d.mp4", tag, depth, i+1))
 		spec := RangeSpec{
 			Input: info.Path, Output: halfPath,
 			Start: seg.start, Duration: seg.dur,
@@ -4202,7 +4251,7 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 		if err := e.FF.Run(ctx, RangeArgs(spec), seg.dur, nil); err != nil {
 			return nil, false, err
 		}
-		parts, _, err := e.fitSegment(ctx, req, info, sp, halfPath, seg.start, tmpDir, depth+1, sub)
+		parts, _, err := e.fitSegment(ctx, req, info, sp, halfPath, seg.start, tmpDir, tag, depth+1, sub)
 		if err != nil {
 			return nil, false, err
 		}
@@ -5289,6 +5338,7 @@ type Options struct {
 	JSON       bool
 	DryRun     bool
 	FFmpegPath string
+	FFmpegSet  bool // --ffmpeg was given on the command line
 	NoDownload bool
 	ShowVer    bool
 	Files      []string
@@ -5350,6 +5400,11 @@ func ParseArgs(args []string, defaults config.Settings) (Options, error) {
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ffmpeg" {
+			opts.FFmpegSet = true
+		}
+	})
 	opts.Files = fs.Args()
 	return opts, nil
 }
@@ -5474,11 +5529,21 @@ func classify(paths []string) ([]string, []rejectedFile) {
 	return files, rejected
 }
 
-// acquireFFmpeg locates FFmpeg, downloading it once when allowed.
+// acquireFFmpeg locates FFmpeg, downloading it once when allowed. An explicit
+// --ffmpeg is authoritative: it is never silently replaced by another copy.
 func acquireFFmpeg(ctx context.Context, opts Options, deps Deps, stderr io.Writer) (ffmpeg.Tools, int) {
 	loc := deps.Locator
+	if opts.FFmpegSet && opts.FFmpegPath != "" {
+		only := ffmpeg.Locator{Override: opts.FFmpegPath, Verify: deps.Locator.Verify}
+		if tools, err := only.Locate(ctx); err == nil {
+			return tools, ExitOK
+		} else {
+			fmt.Fprintf(stderr, "지정한 FFmpeg를 사용할 수 없습니다: %s\n%v\nffmpeg와 ffprobe가 함께 있는지 확인하세요.\n", opts.FFmpegPath, err)
+			return ffmpeg.Tools{}, ExitNoFFmpeg
+		}
+	}
 	if opts.FFmpegPath != "" {
-		loc.Override = opts.FFmpegPath
+		loc.Override = opts.FFmpegPath // saved preference: still a candidate, not a hard requirement
 	}
 	if tools, err := loc.Locate(ctx); err == nil {
 		return tools, ExitOK
@@ -5755,7 +5820,8 @@ go build ./cmd/vc
 go run ./cmd/vc --version
 go run ./cmd/vc --dry-run --target 5 --part 4 "영상 파일.mp4"
 go run ./cmd/vc --target 5 --part 4 "영상 파일.mp4"          # 단일 압축
-go run ./cmd/vc --json --target 1 --part 1 "영상 파일.mp4"   # 분할 + JSON
+go run ./cmd/vc --json --target 2 --part 1 "영상 파일.mp4"   # 분할 + JSON
+go run ./cmd/vc --no-download --ffmpeg "없는경로\ffmpeg.exe" "영상 파일.mp4"  # 종료 코드 3
 ```
 기대: `--dry-run`은 인코딩 없이 계획만 출력하고, 압축 실행 시 `<이름>_compressed.mp4` 또는 `<이름>_partNN.mp4`가 원본 옆에 생성되며 원본은 수정되지 않는다.
 
@@ -7151,6 +7217,7 @@ npm --prefix frontend run test -- --run src/components src/App.test.tsx
 `frontend/src/components/DropZone.tsx`:
 ```tsx
 import { useCallback, useState } from 'react'
+import type { DragEvent } from 'react'
 
 interface Props {
   disabled: boolean
@@ -7161,7 +7228,7 @@ export default function DropZone({ disabled, onPick }: Props) {
   const [hover, setHover] = useState(false)
 
   const handleDragOver = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
+    (e: DragEvent<HTMLDivElement>) => {
       e.preventDefault()
       if (!disabled) setHover(true)
     },
@@ -7239,7 +7306,8 @@ export default function JobRow({ job, running, onReveal, onRemove }: Props) {
         <div className="job__bar-fill" style={{ width: `${percent}%` }} />
       </div>
       <div className="job__meta">
-        <span>{summarizeJob(job)}</span>
+        {/* A failed job shows its message once, in the error paragraph below. */}
+        {job.status !== 'failed' && <span>{summarizeJob(job)}</span>}
         {job.status === 'running' && <span className="job__stage">{stageLabel(job.stage)}</span>}
         {job.status === 'done' && job.result && (
           <span className="job__detail">
@@ -7885,7 +7953,10 @@ H.265/AV1, 하드웨어 인코더(NVENC/QSV), 자막·다중 오디오 트랙 �
 
 ```
 frontend/node_modules/
-frontend/dist/
+# Keep the directory present (go:embed needs at least one file) while ignoring
+# build output. The directory itself must not be ignored, or git never descends
+# into it and the negation below has no effect.
+frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/wailsjs/
 build/bin/
@@ -7945,3 +8016,39 @@ git commit -m "docs: readme and final verification pass"
 - 목표 크기를 넘기지 못하는 단일 결과물이 최종 위치에 남지 않는다(초과 시 재시도 → 해상도 하향 → 분할).
 - 어떤 실패/취소 상황에서도 원본이 변경되지 않고, 최종 폴더에 불완전한 산출물이 남지 않는다.
 - 모든 사용자 노출 문자열이 한국어이고, 오류 메시지가 원인과 다음 행동을 알려준다.
+
+---
+
+## 후속 수정 (구현 후 코드 리뷰 반영)
+
+Task 1~17 완료 후 브랜치 전체를 리뷰해 다음을 수정했다. 각 항목은 스펙과 대조하고 테스트로 고정했다.
+
+### A. 이벤트 페이로드와 시작 게이팅 (커밋 `fix(ui)`)
+
+- **치명적 버그**: Wails v2는 이벤트 핸들러를 `callback.apply(null, data)`로 호출하므로 첫 인자가 곧 페이로드(`Job[]`)다. 이전 `unwrap`이 이를 단일 객체로 바꿔 작업 목록 렌더링이 예외로 죽었다. `frontend/src/lib/payload.ts`의 `jobListPayload`/`objectPayload`가 두 호출 형태를 모두 처리하고, 실제로 `queue:update`를 발화하는 `App` 테스트를 추가했다.
+- 낙관적 추가는 id로 중복 제거(`mergeJobs`).
+- 크기 입력을 타이핑하는 즉시 검증하고(스펙 §7) 유효하지 않으면 시작 버튼을 비활성화한다.
+- GUI에 **FFmpeg 직접 선택**(`App.PickFFmpeg`) 추가: 선택한 바이너리(같은 폴더의 `ffprobe.exe` 포함)를 검증해 즉시 사용하고 `settings.json`에 저장한다. 이 과정에서 `settings.json`의 `ffmpegPath`가 `Locator.Configured`에 전달되지 않던 실제 버그도 고쳤다.
+
+### B. 세로/정사각 원본의 해상도 사다리 (커밋 `fix(plan)`)
+
+스펙 §4.3의 사다리는 각 단계마다 가로·세로 박스를 모두 나열한다. 이전 구현은 세로 영상(1080×1920)을 가로 박스로 눌러 608×1080으로 만들었다. `boxFor`가 원본 방향에 맞춰 박스를 회전시킨다(업스케일 금지 유지).
+
+### C. CLI 출력과 이벤트 스로틀 (커밋 `feat(cli)`)
+
+- 진행률은 stderr, 결과·요약은 stdout(스펙 §8). `--json`일 때 stdout은 JSON만 포함한다.
+- 사람이 읽는 모드는 `[i/n]` 순번과 마지막 요약 줄을 출력한다.
+- `--verbose` 추가: ffmpeg 명령줄과 실패 시 stderr 마지막 20줄. 이를 위해 `Deps.NewProcessor`가 로거를 받는다.
+- `queue:update` 스냅샷은 100ms로 스로틀한다(스펙 §3).
+
+### D. 엔진 견고성 (커밋 `fix(engine)`)
+
+- 단일 출력이 목표 크기 이하면서 구조적으로 잘못된 경우(비디오 스트림 없음/길이 불일치) 사다리를 더 내려가지 않고 실제 원인으로 즉시 실패한다.
+- 분할 조각의 faststart 리먹스 후 크기를 다시 측정해, 리먹스로 조각 크기를 넘긴 경우 해당 구간을 재인코딩한다(검증 실패로 작업 전체를 버리지 않음).
+
+### E. 로그·정리·고지 (커밋 `chore(logging)`)
+
+- `internal/logging`: `%LocalAppData%\VideoCompress\logs\app.log`, 5MB 회전, 3개 보관(스펙 §9). GUI가 `engine.Logf`/`ffmpeg.Client.Logf`에 연결해 작업 시작/종료와 FFmpeg 오류를 기록한다.
+- 시작 시 `vc-job-*`뿐 아니라 중단된 `ffmpeg-dl-*` 임시 폴더도 정리한다(24시간 초과, 알려진 접두사만).
+- `THIRD_PARTY_NOTICES.md` 추가(스펙 §11)와 README 갱신(`--verbose`, 진행률 위치, 로그 경로, 직접 선택).
+
