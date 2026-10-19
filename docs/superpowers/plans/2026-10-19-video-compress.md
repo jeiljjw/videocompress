@@ -23,7 +23,7 @@
 - 검증: 단일은 크기·비디오 스트림·duration ±2초, 분할은 조각별 크기·조각 합 ±`max(2, 조각수×0.1)`초·첫 조각 start_time ≈ 0.
 - 출력 이름: 단일 `<이름>_compressed.mp4`, 충돌 시 `<이름>_compressed (2).mp4`. 분할 `<이름>_part01.mp4`, 그룹 충돌 시 `<이름> (2)_part01.mp4`. 번호 자릿수 `max(2, 자릿수)`.
 - 원본은 절대 수정하지 않는다. 기존 파일을 덮어쓰지 않는다.
-- 임시 경로: `os.UserCacheDir()/VideoCompress/temp/<jobID>/`, 설정: `os.UserConfigDir()/VideoCompress/settings.json`, FFmpeg: `<cache>/VideoCompress/ffmpeg/bin/`.
+- 임시 경로: `os.UserCacheDir()/VideoCompress/temp/vc-job-*/`(작업마다 임시 폴더를 만들고 끝나면 삭제), 설정: `os.UserConfigDir()/VideoCompress/settings.json`, FFmpeg: `<cache>/VideoCompress/ffmpeg/bin/`.
 - GUI 이벤트: `queue:update`(Job 배열), `ffmpeg:status`(상태 객체), `app:notice`(`{level,message}`).
 - UI 문자열은 한국어. 사용자에게 보이는 오류는 원인과 다음 행동을 포함한다.
 - 모든 테스트는 `go test ./...`, `npm --prefix frontend run test -- --run`로 실행한다. FFmpeg가 필요한 테스트는 없으면 `t.Skip`한다.
@@ -677,7 +677,8 @@ func TestParseProbeFull(t *testing.T) {
 	if info.Rotation != 0 {
 		t.Fatalf("rotation = %d", info.Rotation)
 	}
-	if info.Audio == nil || info.Audio.Codec != "aac" || info.Audio.BitrateKbps != 127 || info.Audio.Channels != 2 {
+	// 127999 bit/s rounds to 128 kbps.
+	if info.Audio == nil || info.Audio.Codec != "aac" || info.Audio.BitrateKbps != 128 || info.Audio.Channels != 2 {
 		t.Fatalf("audio = %+v", info.Audio)
 	}
 	if info.SizeBytes != 52428800 {
@@ -989,10 +990,10 @@ func TestFitBox(t *testing.T) {
 		{1920, 1080, 1280, 720, 1280, 720},
 		{3840, 2160, 1920, 1080, 1920, 1080},
 		{1080, 1920, 1280, 720, 404, 720},
-		{640, 360, 854, 480, 640, 360},   // no upscale
-		{640, 480, 854, 480, 640, 480},   // no upscale, already fits
-		{1000, 1000, 1920, 1080, 1080, 1080},
-		{1920, 800, 1280, 720, 1280, 534}, // 533.3 → even 534
+		{640, 360, 854, 480, 640, 360}, // no upscale
+		{640, 480, 854, 480, 640, 480}, // no upscale, already fits
+		{1000, 1000, 1920, 1080, 1000, 1000}, // already fits, never upscale
+		{1920, 800, 1280, 720, 1280, 532},    // 533.3 → even 532
 		{1919, 1079, 1920, 1080, 1918, 1078},
 	}
 	for _, c := range cases {
@@ -1024,8 +1025,12 @@ func TestVideoKbpsFor(t *testing.T) {
 	if got := VideoKbpsFor(5_000_000, 60, 128); got != 505 {
 		t.Fatalf("got %d want 505", got)
 	}
-	// 5MB / 10s, audio 96: capped at 12000
-	if got := VideoKbpsFor(5_000_000, 10, 96); got != 12000 {
+	// 5MB / 10s, audio 96: 4000*0.95-96 = 3704
+	if got := VideoKbpsFor(5_000_000, 10, 96); got != 3704 {
+		t.Fatalf("got %d want 3704", got)
+	}
+	// 20MB / 1s, audio 96: 160000*0.95-96 → capped at 12000
+	if got := VideoKbpsFor(20_000_000, 1, 96); got != 12000 {
 		t.Fatalf("got %d want 12000", got)
 	}
 	// 1MB / 3600s, audio 96: clamped to 100
@@ -1072,7 +1077,8 @@ func TestSingleCandidatesLadder(t *testing.T) {
 	if cands[0].Width != 1920 || cands[0].Height != 1080 {
 		t.Fatalf("first candidate = %+v", cands[0])
 	}
-	if cands[1].Width != 1280 || cands[2].Width != 854 {
+	// 480p box 854x480 fitted to a 1920x1080 source → 852x480 (even, no upscale).
+	if cands[1].Width != 1280 || cands[2].Width != 852 {
 		t.Fatalf("ladder order wrong: %+v", cands)
 	}
 }
@@ -2627,10 +2633,10 @@ func TestVerifyParts(t *testing.T) {
 }
 
 func TestDurationToleranceGrowsWithParts(t *testing.T) {
-	if DurationTolerance(180, 6) < 2.0 {
+	if DurationTolerance(6) < 2.0 {
 		t.Fatal("tolerance must be at least 2s")
 	}
-	if DurationTolerance(180, 200) <= DurationTolerance(180, 6) {
+	if DurationTolerance(200) <= DurationTolerance(6) {
 		t.Fatal("tolerance must grow with part count")
 	}
 }
@@ -2778,11 +2784,12 @@ import (
 	"videocompress/internal/media"
 )
 
-// DurationTolerance allows container rounding: 2 seconds plus 0.1s per part.
-func DurationTolerance(duration float64, parts int) float64 {
-	tol := 2.0 + float64(parts)*0.1
-	if max := duration * 0.05; tol > max && max > 1.0 {
-		tol = max
+// DurationTolerance allows container rounding: at least 2 seconds, growing
+// slightly (0.1s) with the number of parts.
+func DurationTolerance(parts int) float64 {
+	tol := 2.0
+	if byParts := float64(parts) * 0.1; byParts > tol {
+		tol = byParts
 	}
 	return tol
 }
@@ -2798,7 +2805,7 @@ func VerifySingle(src, out *media.Info, targetBytes int64) error {
 	if out.Width <= 0 || out.Height <= 0 {
 		return fmt.Errorf("출력에 비디오 스트림이 없습니다")
 	}
-	tol := DurationTolerance(src.Duration, 1)
+	tol := DurationTolerance(1)
 	if math.Abs(out.Duration-src.Duration) > tol {
 		return fmt.Errorf("출력 길이가 원본과 다릅니다: %.1fs vs %.1fs", out.Duration, src.Duration)
 	}
@@ -2829,7 +2836,7 @@ func VerifyParts(src *media.Info, parts []*media.Info, partBytes int64) error {
 	if len(parts[0].Path) > 0 && parts[0].StartTime > 0.5 {
 		return fmt.Errorf("첫 조각이 0초에서 시작하지 않습니다: %.2fs", parts[0].StartTime)
 	}
-	tol := DurationTolerance(src.Duration, len(parts))
+	tol := DurationTolerance(len(parts))
 	if math.Abs(sum-src.Duration) > tol {
 		return fmt.Errorf("조각 길이 합이 원본과 다릅니다: %.1fs vs %.1fs", sum, src.Duration)
 	}
@@ -2986,6 +2993,7 @@ import (
 func TestRetryProgressIsMonotonic(t *testing.T) {
 	var got []float64
 	rp := newRetryProgress(func(_ string, pct float64) { got = append(got, pct) })
+	rp.within("compressing", 0.0)
 	rp.within("compressing", 0.5)
 	rp.within("compressing", 1.0)
 	rp.fail()
@@ -3196,6 +3204,7 @@ type RetryProgress struct {
 	report func(stage string, pct float64)
 	base   float64
 	span   float64
+	last   float64
 }
 
 func newRetryProgress(report func(stage string, pct float64)) *RetryProgress {
@@ -3240,6 +3249,10 @@ func (r *RetryProgress) emit(stage string, pct float64) {
 	if pct > 100 {
 		pct = 100
 	}
+	if pct < r.last {
+		pct = r.last // a retry must never move the bar backwards
+	}
+	r.last = pct
 	r.report(stage, pct)
 }
 ```
@@ -4334,7 +4347,7 @@ go test ./internal/engine -run 'TestProcessSplit' -v -timeout 40m
 
 ```powershell
 # 아무 긴 영상과 함께 실행한 뒤 Ctrl+C
-go run ./cmd/vc --target 1 --part 1 <video>
+go run ./cmd/vc --target 1 --part 1 "영상 파일.mp4"
 ```
 기대: 중단 시 최종 폴더에 `_part`·`_compressed` 파일이 생기지 않고 프로세스가 종료된다(임시 폴더는 Task 16의 정리 로직에서 함께 확인).
 
@@ -5740,9 +5753,9 @@ go build ./cmd/vc
 
 ```powershell
 go run ./cmd/vc --version
-go run ./cmd/vc --dry-run --target 5 --part 4 <video>
-go run ./cmd/vc --target 5 --part 4 <video>          # 단일 압축
-go run ./cmd/vc --json --target 1 --part 1 <video>   # 분할 + JSON
+go run ./cmd/vc --dry-run --target 5 --part 4 "영상 파일.mp4"
+go run ./cmd/vc --target 5 --part 4 "영상 파일.mp4"          # 단일 압축
+go run ./cmd/vc --json --target 1 --part 1 "영상 파일.mp4"   # 분할 + JSON
 ```
 기대: `--dry-run`은 인코딩 없이 계획만 출력하고, 압축 실행 시 `<이름>_compressed.mp4` 또는 `<이름>_partNN.mp4`가 원본 옆에 생성되며 원본은 수정되지 않는다.
 
@@ -7852,7 +7865,7 @@ go test ./internal/ffmpeg -run TestInstallRealFFmpeg -v -timeout 30m
 | --- | --- |
 | 설정 | `%AppData%\VideoCompress\settings.json` |
 | FFmpeg | `%LocalAppData%\VideoCompress\ffmpeg\bin\` |
-| 임시 작업 | `%LocalAppData%\VideoCompress\temp\<job>\` |
+| 임시 작업 | `%LocalAppData%\VideoCompress\temp\vc-job-*\` (작업 종료 시 삭제) |
 
 ## 문제 해결
 
