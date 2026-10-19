@@ -122,7 +122,10 @@ require github.com/wailsapp/wails/v2 v2.11.0
 `.gitignore`에 추가(기존 규칙 유지):
 ```
 frontend/node_modules/
-frontend/dist/
+# Keep the directory present (go:embed needs at least one file) while ignoring
+# build output. The directory itself must not be ignored, or git never descends
+# into it and the negation below has no effect.
+frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/wailsjs/
 build/bin/
@@ -7939,7 +7942,10 @@ H.265/AV1, 하드웨어 인코더(NVENC/QSV), 자막·다중 오디오 트랙 �
 
 ```
 frontend/node_modules/
-frontend/dist/
+# Keep the directory present (go:embed needs at least one file) while ignoring
+# build output. The directory itself must not be ignored, or git never descends
+# into it and the negation below has no effect.
+frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/wailsjs/
 build/bin/
