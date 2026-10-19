@@ -169,8 +169,18 @@ func (e *Engine) fitSegment(ctx context.Context, req Request, info *media.Info, 
 		if err != nil {
 			return nil, false, err
 		}
-		rep.emit("repairing", 100)
-		return []string{out}, false, nil
+		// The segment muxer's size estimate is not exact and a container
+		// rewrite moves the moov atom, so re-measure before trusting the part.
+		// A remux that pushes the part over the limit is re-encoded below.
+		ri, err := e.FF.Probe(ctx, out)
+		if err != nil {
+			return nil, false, err
+		}
+		if ri.SizeBytes <= req.PartBytes {
+			rep.emit("repairing", 100)
+			return []string{out}, false, nil
+		}
+		cur = ri
 	}
 
 	kbps := RetryKbps(sp.VideoKbps, req.PartBytes, cur.SizeBytes)

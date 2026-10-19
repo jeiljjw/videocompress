@@ -64,7 +64,15 @@ func (e *Engine) processSingle(ctx context.Context, req Request, info *media.Inf
 			if err := VerifySingle(info, outInfo, req.TargetBytes); err != nil {
 				lastErr = err
 				e.logf("%s %s attempt %d/%d rejected: %v", req.InputPath, stage.Label, attempt, maxSingleAttempts, err)
-				if outInfo.SizeBytes <= req.TargetBytes || attempt == maxSingleAttempts {
+				if outInfo.SizeBytes <= req.TargetBytes {
+					// The file is already small enough, so the problem is
+					// structural (no video stream, or a duration that does not
+					// match the source). No ladder rung can fix that, and
+					// splitting cannot either: fail with the real reason
+					// instead of burning more encodes.
+					return nil, fmt.Errorf("출력 검증 실패: %w", err)
+				}
+				if attempt == maxSingleAttempts {
 					break
 				}
 				next := RetryKbps(kbps, req.TargetBytes, outInfo.SizeBytes)
