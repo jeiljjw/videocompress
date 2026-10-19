@@ -64,6 +64,17 @@ var ladder = []box{
 
 var splitSegments = []int{120, 60, 30, 15}
 
+// boxFor orients a ladder box to match the source. The spec lists a landscape
+// and a portrait box per rung, so a portrait video is scaled against 1080×1920
+// instead of being squeezed by the landscape box's 1080 height. A source that
+// is taller than it is wide is treated as portrait.
+func boxFor(info *Info, b box) (int, int) {
+	if info != nil && info.Height > info.Width {
+		return b.height, b.width
+	}
+	return b.width, b.height
+}
+
 // FitBox scales w×h to fit inside the box without upscaling, preserving the
 // aspect ratio, and returns even dimensions (required by yuv420p).
 func FitBox(w, h, boxW, boxH int) (int, int) {
@@ -148,7 +159,8 @@ func SingleCandidates(info *Info, targetBytes int64) []Candidate {
 	var out []Candidate
 	seen := map[[2]int]bool{}
 	for _, b := range ladder {
-		w, h := FitBox(info.Width, info.Height, b.width, b.height)
+		bw, bh := boxFor(info, b)
+		w, h := FitBox(info.Width, info.Height, bw, bh)
 		if w <= 0 || h <= 0 {
 			continue
 		}
@@ -171,7 +183,8 @@ func SplitPlanFor(info *Info, partBytes int64) (*SplitPlan, error) {
 	if info == nil || info.Duration <= 0 || info.Width <= 0 || info.Height <= 0 {
 		return nil, ErrInvalidInfo
 	}
-	w, h := FitBox(info.Width, info.Height, 1280, 720)
+	boxW, boxH := boxFor(info, box{label: "720p", width: 1280, height: 720})
+	w, h := FitBox(info.Width, info.Height, boxW, boxH)
 	audioKbps, _ := AudioPlan(info, true)
 	floor := FloorKbps(w, h)
 	for _, seg := range splitSegments {

@@ -200,3 +200,41 @@ func TestPlanForSkipAndModes(t *testing.T) {
 		t.Fatalf("want ErrInvalidSettings, got %v", err)
 	}
 }
+
+// The spec's ladder lists both a landscape and a portrait box per rung, so a
+// portrait video must not be squeezed by the landscape box's long side.
+func TestSingleCandidatesOrientBoxToSource(t *testing.T) {
+	cases := []struct {
+		name               string
+		w, h, wantW, wantH int
+	}{
+		{"landscape", 1920, 1080, 1920, 1080},
+		{"portrait", 1080, 1920, 1080, 1920},
+		{"portrait-small-no-upscale", 480, 854, 480, 854},
+		{"square", 1080, 1080, 1080, 1080},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 20s at 5MB is ~1900kbps, above the 1500 floor of the 1080p rung.
+			info := videoInfo(tc.w, tc.h, 20, 50_000_000, nil)
+			got := SingleCandidates(info, 5_000_000)
+			if len(got) == 0 {
+				t.Fatal("no candidates")
+			}
+			if got[0].Width != tc.wantW || got[0].Height != tc.wantH {
+				t.Fatalf("first candidate = %dx%d want %dx%d", got[0].Width, got[0].Height, tc.wantW, tc.wantH)
+			}
+		})
+	}
+}
+
+func TestSplitPlanForOrientsBoxToSource(t *testing.T) {
+	portrait := videoInfo(1080, 1920, 60, 1<<30, nil)
+	sp, err := SplitPlanFor(portrait, 1_000_000)
+	if err != nil {
+		t.Fatalf("split plan: %v", err)
+	}
+	if sp.Width != 720 || sp.Height != 1280 {
+		t.Fatalf("split box = %dx%d want 720x1280", sp.Width, sp.Height)
+	}
+}
