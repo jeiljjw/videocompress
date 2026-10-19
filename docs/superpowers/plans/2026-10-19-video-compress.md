@@ -290,6 +290,23 @@ func main() {
 }
 ```
 
+`frontend/src/App.tsx`(템플릿은 생성된 바인딩 `../wailsjs/go/main/App`의 `Greet`을
+import하므로 스텁 `app.go`에는 존재하지 않아 `tsc`가 실패한다. Task 16에서 최종 교체):
+
+```tsx
+// Task 1 placeholder. Replaced with the real UI in Task 16.
+function App() {
+  return (
+    <div id="App">
+      <h1>VideoCompress</h1>
+      <p>스캐폴딩 준비 완료</p>
+    </div>
+  )
+}
+
+export default App
+```
+
 `frontend/dist/.gitkeep` 파일을 만들어 embed 디렉터리를 보장한다.
 
 - [ ] **Step 5: 검증**
