@@ -251,6 +251,30 @@ func TestParseArgsUsesDefaults(t *testing.T) {
 	}
 }
 
+// A --json run with nothing usable must still print JSON, so a strict consumer
+// never parses an empty stdout.
+func TestJSONUsageErrorStillPrintsJSON(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := Run([]string{"--json", filepath.Join(t.TempDir(), "missing.mp4")}, &out, &errBuf, testDeps(t, &fakeProc{}))
+	if code != ExitUsage {
+		t.Fatalf("code = %d want %d (stderr %q)", code, ExitUsage, errBuf.String())
+	}
+	var report struct {
+		OK       bool   `json:"ok"`
+		ExitCode int    `json:"exitCode"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not json: %v\n%q", err, out.String())
+	}
+	if report.OK || report.ExitCode != ExitUsage || report.Error == "" {
+		t.Fatalf("report = %+v", report)
+	}
+	if !strings.Contains(errBuf.String(), "사용할 수 있는 비디오") && !strings.Contains(errBuf.String(), "비디오 파일이 없습니다") {
+		t.Fatalf("stderr should explain the usage error: %q", errBuf.String())
+	}
+}
+
 // --json keeps stdout parseable but must still show progress on stderr, or a
 // long encode looks hung.
 func TestJSONKeepsStdoutPureAndProgressOnStderr(t *testing.T) {

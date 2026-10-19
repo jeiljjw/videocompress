@@ -15,12 +15,13 @@ import (
 )
 
 type fakeProc struct {
-	mu       sync.Mutex
-	calls    []engine.Request
-	delay    time.Duration
-	failOn   map[string]error
-	skips    map[string]bool
-	progress []engine.Progress
+	mu        sync.Mutex
+	calls     []engine.Request
+	delay     time.Duration
+	failOn    map[string]error
+	skips     map[string]bool
+	progress  []engine.Progress
+	afterStep func() // runs after each progress callback (tests the throttle clock)
 }
 
 func (f *fakeProc) Process(ctx context.Context, req engine.Request, onProgress func(engine.Progress)) (*engine.Result, error) {
@@ -37,6 +38,9 @@ func (f *fakeProc) Process(ctx context.Context, req engine.Request, onProgress f
 		}
 		for _, p := range steps {
 			onProgress(p)
+			if f.afterStep != nil {
+				f.afterStep()
+			}
 		}
 	}
 	if delay > 0 {
@@ -115,38 +119,75 @@ func TestAddFiltersAndValidates(t *testing.T) {
 	}
 }
 
+// fakeClock drives the manager's 100ms throttle gate deterministically.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
 // Snapshots are throttled to 100ms: back-to-back progress jumps must not each
-// produce an event, because the UI redraws a full snapshot per event.
+// produce an event (the UI redraws a whole snapshot per event), while a jump
+// after the window is published, and the final state always is.
 func TestProgressSnapshotsAreThrottled(t *testing.T) {
-	proc := &fakeProc{progress: []engine.Progress{
+	steps := []engine.Progress{
 		{Stage: "compressing 720p", Percent: 10},
 		{Stage: "compressing 720p", Percent: 90},
-	}}
-	var mu sync.Mutex
-	var percents []float64
-	var m *Manager
-	m = NewManager(proc, func() {
-		mu.Lock()
-		for _, j := range m.Snapshot() {
-			percents = append(percents, j.Percent)
-		}
-		mu.Unlock()
-	})
-	m.Add(tmpVideo(t, "a.mp4"))
-	if err := m.Start(Options{TargetBytes: 5_000_000, PartBytes: 4_000_000}); err != nil {
-		t.Fatalf("start: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return !m.IsRunning() })
+	cases := []struct {
+		name       string
+		gap        time.Duration
+		wantSecond bool
+	}{
+		{"same instant is suppressed", 0, false},
+		{"after the window is published", 200 * time.Millisecond, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+			proc := &fakeProc{progress: steps, afterStep: func() { clock.advance(tc.gap) }}
+			var mu sync.Mutex
+			var percents []float64
+			var m *Manager
+			m = newManager(proc, func() {
+				mu.Lock()
+				for _, j := range m.Snapshot() {
+					percents = append(percents, j.Percent)
+				}
+				mu.Unlock()
+			}, clock.now)
+			m.Add(tmpVideo(t, "a.mp4"))
+			if err := m.Start(Options{TargetBytes: 5_000_000, PartBytes: 4_000_000}); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			waitFor(t, 5*time.Second, func() bool { return !m.IsRunning() })
 
-	mu.Lock()
-	defer mu.Unlock()
-	for _, p := range percents {
-		if p == 90 {
-			t.Fatalf("the throttled update was published: %v", percents)
-		}
-	}
-	if len(percents) == 0 || percents[len(percents)-1] != 100 {
-		t.Fatalf("final percent should still be published: %v", percents)
+			mu.Lock()
+			defer mu.Unlock()
+			saw90 := false
+			for _, p := range percents {
+				if p == 90 {
+					saw90 = true
+				}
+			}
+			if saw90 != tc.wantSecond {
+				t.Fatalf("published 90%% = %v, want %v (snapshots %v)", saw90, tc.wantSecond, percents)
+			}
+			if len(percents) == 0 || percents[len(percents)-1] != 100 {
+				t.Fatalf("the final percent must still be published: %v", percents)
+			}
+		})
 	}
 }
 

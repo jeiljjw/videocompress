@@ -62,13 +62,19 @@ type Manager struct {
 	cancel   context.CancelFunc
 	running  bool
 	seq      int
-	lastEmit time.Time // last progress-driven snapshot (100ms throttle)
+	now      func() time.Time // injectable for the throttle test
+	lastEmit time.Time        // last progress-driven snapshot (100ms throttle)
 }
 
 // NewManager returns a manager that runs jobs through proc. notify is called
 // without the lock held whenever observable state changes.
 func NewManager(proc Processor, notify func()) *Manager {
-	return &Manager{proc: proc, notify: notify}
+	return newManager(proc, notify, time.Now)
+}
+
+// newManager lets tests inject the clock used by the progress throttle.
+func newManager(proc Processor, notify func(), now func() time.Time) *Manager {
+	return &Manager{proc: proc, notify: notify, now: now}
 }
 
 func (m *Manager) fire() {
@@ -259,10 +265,10 @@ func (m *Manager) run(ctx context.Context, opts Options) {
 				// Snapshots are throttled to 100ms (spec §3) so a fast encoder
 				// cannot flood the UI; a stage change or completion always goes
 				// through, and a dropped update is re-sent once the gate opens.
-				due := time.Since(m.lastEmit) >= 100*time.Millisecond
+				due := !m.now().Before(m.lastEmit.Add(100 * time.Millisecond))
 				if stageChanged || p.Percent >= 100 || (math.Abs(p.Percent-j.Percent) >= 0.5 && due) {
 					j.Stage, j.Percent = p.Stage, p.Percent
-					m.lastEmit = time.Now()
+					m.lastEmit = m.now()
 					changed = true
 				}
 			}

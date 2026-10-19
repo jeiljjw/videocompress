@@ -137,7 +137,9 @@ func (a *App) startup(ctx context.Context) {
 	// The log lives beside the FFmpeg cache: %LOCALAPPDATA%\VideoCompress\logs.
 	if a.cacheDir != "" {
 		if lg, err := logging.Open(filepath.Join(a.cacheDir, "logs")); err == nil {
+			a.mu.Lock()
 			a.logger = lg
+			a.mu.Unlock()
 		}
 	}
 	a.logf("app starting: settings=%s cache=%s", a.settingsPath, a.cacheDir)
@@ -157,7 +159,10 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(context.Context) {
 	a.manager.Cancel()
 	a.logf("app shutting down")
-	_ = a.logger.Close()
+	a.mu.Lock()
+	lg := a.logger
+	a.mu.Unlock()
+	_ = lg.Close()
 }
 
 // beforeClose asks before quitting while jobs run; returns true to block close.
@@ -371,7 +376,8 @@ func (a *App) PickFFmpeg() (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(path) == "" {
-		return "", errors.New("선택이 취소되었습니다")
+		// The user closed the dialog: not an error, just nothing to do.
+		return "", nil
 	}
 	a.mu.Lock()
 	verify := a.locator.Verify
@@ -458,10 +464,14 @@ func (a *App) notice(level, message string) {
 	a.emit(EventNotice, map[string]string{"level": level, "message": message})
 }
 
-// logf appends a line to the app log. It is safe to call at any time: a nil
-// logger and write errors are both ignored.
+// logf appends a line to the app log. It is safe to call at any time and from
+// any goroutine: the logger is read under the lock, and a nil logger and write
+// errors are both ignored.
 func (a *App) logf(format string, args ...any) {
-	a.logger.Printf(format, args...)
+	a.mu.Lock()
+	lg := a.logger
+	a.mu.Unlock()
+	lg.Printf(format, args...)
 }
 
 // cleanupStaleTemp removes scratch folders left behind by a crashed run: job

@@ -140,7 +140,8 @@ export default function App() {
   const onPickFFmpeg = useCallback(async () => {
     if (!api) return
     try {
-      await api.PickFFmpeg()
+      const picked = await api.PickFFmpeg()
+      if (!picked) return // the dialog was dismissed; not an error
       setStatus(await api.GetFFmpegStatus())
       setNotice('')
     } catch (e) {

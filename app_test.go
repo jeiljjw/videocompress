@@ -217,11 +217,18 @@ func TestPickFFmpegRejectsUnusableBinary(t *testing.T) {
 	}
 }
 
-func TestPickFFmpegCancelIsNotAnError(t *testing.T) {
+func TestPickFFmpegCancelIsANoOp(t *testing.T) {
 	a := testApp(t)
 	a.pickFFmpegFn = func(context.Context) (string, error) { return "", nil }
-	if _, err := a.PickFFmpeg(); err == nil {
-		t.Fatal("want an error for an empty selection")
+	got, err := a.PickFFmpeg()
+	if err != nil {
+		t.Fatalf("cancelling the picker must not be an error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("got %q, want an empty path", got)
+	}
+	if st := a.GetFFmpegStatus(); st.Found || st.Path != "" {
+		t.Fatalf("a cancelled pick must not change the status: %+v", st)
 	}
 }
 

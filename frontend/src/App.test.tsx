@@ -101,6 +101,17 @@ describe('App', () => {
     expect(await screen.findByText('FFmpeg 준비에 실패했습니다')).toBeInTheDocument()
   })
 
+  it('keeps quiet when the FFmpeg picker is dismissed', async () => {
+    const { api } = installBinding({
+      GetFFmpegStatus: vi.fn(async () => ({ found: false, path: '', downloading: false, percent: 0, error: '' })),
+      PickFFmpeg: vi.fn(async () => ''),
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'FFmpeg 직접 선택' }))
+    await waitFor(() => expect(api.PickFFmpeg).toHaveBeenCalled())
+    expect(document.querySelector('.notice')).toBeNull()
+  })
+
   it('applies a queue:update payload in the shape wails v2 delivers', async () => {
     const { handlers } = installBinding()
     render(<App />)

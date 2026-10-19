@@ -163,16 +163,14 @@ func Run(args []string, stdout, stderr io.Writer, deps Deps) int {
 		opts.FFmpegPath = settings.FFmpegPath
 	}
 	if err := (config.Settings{TargetMB: opts.TargetMB, PartMB: opts.PartMB}).Validate(); err != nil {
-		fmt.Fprintf(stderr, "%v\n\n%s", err, usageText)
-		return ExitUsage
+		return failUsage(stdout, stderr, opts, ExitUsage, err.Error())
 	}
 	files, rejected := classify(opts.Files)
 	for _, r := range rejected {
 		fmt.Fprintf(stderr, "건너뜀: %s (%s)\n", r.path, r.reason)
 	}
 	if len(files) == 0 {
-		fmt.Fprintf(stderr, "처리할 비디오 파일이 없습니다.\n\n%s", usageText)
-		return ExitUsage
+		return failUsage(stdout, stderr, opts, ExitUsage, "처리할 비디오 파일이 없습니다.")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -322,6 +320,20 @@ func jsonReport(results []fileResult, opts Options, exit int) map[string]any {
 		"exitCode": exit,
 		"files":    results,
 	}
+}
+
+// failUsage prints a usage failure to stderr. With --json it also writes a
+// parseable report to stdout so a script never gets empty output (spec §8).
+func failUsage(stdout, stderr io.Writer, opts Options, exit int, message string) int {
+	fmt.Fprintf(stderr, "%s\n\n%s", message, usageText)
+	if opts.JSON {
+		report := jsonReport([]fileResult{}, opts, exit)
+		report["error"] = message
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(report)
+	}
+	return exit
 }
 
 // summaryLine reports how the whole run ended, so a batch stays readable when
