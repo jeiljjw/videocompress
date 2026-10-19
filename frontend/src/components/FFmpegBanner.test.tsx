@@ -22,4 +22,17 @@ describe('FFmpegBanner', () => {
     render(<FFmpegBanner status={{ found: false, path: '', downloading: true, percent: 42, error: '' }} onDownload={() => {}} />)
     expect(screen.getByRole('button', { name: /내려받는 중 42%/ })).toBeDisabled()
   })
+
+  it('offers a manual pick when the download is not possible', () => {
+    const onPickFFmpeg = vi.fn()
+    render(
+      <FFmpegBanner
+        status={{ found: false, path: '', downloading: false, percent: 0, error: '' }}
+        onDownload={() => {}}
+        onPickFFmpeg={onPickFFmpeg}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'FFmpeg 직접 선택' }))
+    expect(onPickFFmpeg).toHaveBeenCalled()
+  })
 })

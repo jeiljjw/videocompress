@@ -13,14 +13,17 @@ import {
   requireApp,
 } from './lib/api'
 import type { FFmpegStatus, Job, Notice, Settings } from './lib/api'
+import { jobListPayload, objectPayload } from './lib/payload'
 
 const EMPTY_STATUS: FFmpegStatus = { found: false, path: '', downloading: false, percent: 0, error: '' }
 const FINISHED = ['done', 'failed', 'skipped', 'canceled']
 
-/** unwrap handles both Wails call shapes: value or [value]. */
-function unwrap<T>(data: unknown): T | undefined {
-  if (Array.isArray(data)) return data[0] as T
-  return data as T
+/** mergeJobs appends only jobs we do not already show, so an optimistic add
+ * cannot duplicate rows the queue:update event already delivered. */
+function mergeJobs(prev: Job[], added: Job[]): Job[] {
+  const seen = new Set(prev.map((j) => j.id))
+  const fresh = added.filter((j) => !seen.has(j.id))
+  return fresh.length > 0 ? [...prev, ...fresh] : prev
 }
 
 export default function App() {
@@ -30,6 +33,7 @@ export default function App() {
   const [status, setStatus] = useState<FFmpegStatus>(EMPTY_STATUS)
   const [notice, setNotice] = useState('')
   const [running, setRunning] = useState(false)
+  const [settingsValid, setSettingsValid] = useState(true)
 
   useEffect(() => {
     if (!api) return
@@ -48,7 +52,7 @@ export default function App() {
   useEffect(() => {
     if (!api) return
     const offQueue = on(EVENT_QUEUE_UPDATE, (data) => {
-      const list = unwrap<Job[]>(data)
+      const list = jobListPayload(data)
       if (list) setJobs(list)
       void api
         .IsRunning()
@@ -56,12 +60,12 @@ export default function App() {
         .catch(() => {})
     })
     const offStatus = on(EVENT_FFMPEG_STATUS, (data) => {
-      const next = unwrap<FFmpegStatus>(data)
+      const next = objectPayload<FFmpegStatus>(data)
       if (next) setStatus(next)
     })
     const offNotice = on(EVENT_NOTICE, (data) => {
-      const n = unwrap<Notice>(data)
-      if (n) setNotice(n.message)
+      const n = objectPayload<Notice>(data)
+      if (n && typeof n.message === 'string') setNotice(n.message)
     })
     return () => {
       offQueue()
@@ -76,7 +80,7 @@ export default function App() {
       const paths = await api.OpenFileDialog()
       if (!paths || paths.length === 0) return
       const added = await api.AddFiles(paths)
-      if (added?.length) setJobs((prev) => [...prev, ...added])
+      if (added?.length) setJobs((prev) => mergeJobs(prev, added))
       setNotice('')
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
@@ -131,6 +135,19 @@ export default function App() {
     setSettings(await requireApp().GetSettings())
   }, [])
 
+  const onValidChange = useCallback((valid: boolean) => setSettingsValid(valid), [])
+
+  const onPickFFmpeg = useCallback(async () => {
+    if (!api) return
+    try {
+      await api.PickFFmpeg()
+      setStatus(await api.GetFFmpegStatus())
+      setNotice('')
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e))
+    }
+  }, [api])
+
   const counts = useMemo(() => {
     const queued = jobs.filter((j) => j.status === 'queued').length
     const finished = jobs.filter((j) => FINISHED.includes(j.status)).length
@@ -155,11 +172,22 @@ export default function App() {
         </p>
       </header>
 
-      <FFmpegBanner status={status} onDownload={() => void api.DownloadFFmpeg().catch(() => {})} />
+      <FFmpegBanner
+        status={status}
+        onDownload={() => void api.DownloadFFmpeg().catch(() => {})}
+        onPickFFmpeg={() => void onPickFFmpeg()}
+      />
 
       <DropZone disabled={running} onPick={() => void onPick()} />
 
-      <Toolbar running={running} counts={counts} onStart={() => void onStart()} onCancel={() => void onCancel()} onClear={() => void onClear()} />
+      <Toolbar
+        running={running}
+        counts={counts}
+        settingsValid={settingsValid}
+        onStart={() => void onStart()}
+        onCancel={() => void onCancel()}
+        onClear={() => void onClear()}
+      />
 
       {notice && <p className="notice">{notice}</p>}
 
@@ -175,7 +203,7 @@ export default function App() {
         )}
       </section>
 
-      <SettingsPanel settings={settings} running={running} onSave={onSaveSettings} />
+      <SettingsPanel settings={settings} running={running} onSave={onSaveSettings} onValidChange={onValidChange} />
 
       <footer className="app__footer">
         결과는 원본과 같은 폴더에 저장됩니다. CLI는 <code>vc --help</code>로 확인하세요.

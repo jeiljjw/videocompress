@@ -245,7 +245,7 @@ func acquireFFmpeg(ctx context.Context, opts Options, deps Deps, stderr io.Write
 		}
 	}
 	if opts.FFmpegPath != "" {
-		loc.Override = opts.FFmpegPath // saved preference: still a candidate, not a hard requirement
+		loc.Configured = opts.FFmpegPath // saved preference: still a candidate, not a hard requirement
 	}
 	if tools, err := loc.Locate(ctx); err == nil {
 		return tools, ExitOK

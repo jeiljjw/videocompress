@@ -27,6 +27,7 @@ func (stubFF) Run(context.Context, []string, float64, func(float64)) error { ret
 func testApp(t *testing.T) *App {
 	t.Helper()
 	a := NewApp()
+	a.ctx = context.Background()
 	dir := t.TempDir()
 	a.settingsPath = filepath.Join(dir, "settings.json")
 	a.cacheDir = filepath.Join(dir, "cache")
@@ -147,6 +148,95 @@ func TestPrepareFFmpegReportsMissing(t *testing.T) {
 	st := a.GetFFmpegStatus()
 	if st.Found || st.Error == "" {
 		t.Fatalf("status = %+v", st)
+	}
+}
+
+// usableFFmpeg creates an ffmpeg/ffprobe pair and returns the ffmpeg path.
+func usableFFmpeg(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	ff := filepath.Join(dir, "ffmpeg.exe")
+	probe := filepath.Join(dir, "ffprobe.exe")
+	for _, p := range []string{ff, probe} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ff
+}
+
+func onlyFFmpeg(t *testing.T, a *App, ff string) {
+	t.Helper()
+	a.locator.Verify = func(_ context.Context, p string) error {
+		if p != ff {
+			return os.ErrNotExist
+		}
+		return nil
+	}
+}
+
+func TestPickFFmpegStoresVerifiedPath(t *testing.T) {
+	a := testApp(t)
+	ff := usableFFmpeg(t)
+	onlyFFmpeg(t, a, ff)
+	a.pickFFmpegFn = func(context.Context) (string, error) { return ff, nil }
+
+	got, err := a.PickFFmpeg()
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if got != ff {
+		t.Fatalf("path = %q want %q", got, ff)
+	}
+	if st := a.GetFFmpegStatus(); !st.Found || st.Path != ff || st.Error != "" {
+		t.Fatalf("status = %+v", st)
+	}
+	if a.locator.Configured != ff {
+		t.Fatalf("locator.Configured = %q", a.locator.Configured)
+	}
+	loaded, err := config.Load(a.settingsPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.FFmpegPath != ff {
+		t.Fatalf("persisted ffmpegPath = %q", loaded.FFmpegPath)
+	}
+}
+
+func TestPickFFmpegRejectsUnusableBinary(t *testing.T) {
+	a := testApp(t)
+	a.pickFFmpegFn = func(context.Context) (string, error) {
+		return filepath.Join(t.TempDir(), "not-ffmpeg.exe"), nil
+	}
+	if _, err := a.PickFFmpeg(); err == nil || !strings.Contains(err.Error(), "사용할 수 없습니다") {
+		t.Fatalf("err = %v", err)
+	}
+	if st := a.GetFFmpegStatus(); st.Found {
+		t.Fatalf("status should stay not-found: %+v", st)
+	}
+}
+
+func TestPickFFmpegCancelIsNotAnError(t *testing.T) {
+	a := testApp(t)
+	a.pickFFmpegFn = func(context.Context) (string, error) { return "", nil }
+	if _, err := a.PickFFmpeg(); err == nil {
+		t.Fatal("want an error for an empty selection")
+	}
+}
+
+func TestConfiguredFFmpegPathIsUsed(t *testing.T) {
+	a := testApp(t)
+	ff := usableFFmpeg(t)
+	onlyFFmpeg(t, a, ff)
+	if err := config.Save(a.settingsPath, config.Settings{TargetMB: 5, PartMB: 4, FFmpegPath: ff}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	a.loadSettings()
+	if err := a.prepareFFmpeg(context.Background(), false); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if st := a.GetFFmpegStatus(); !st.Found || st.Path != ff {
+		t.Fatalf("status = %+v (saved ffmpegPath must be a candidate)", st)
 	}
 }
 

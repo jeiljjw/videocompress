@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,8 +56,9 @@ type App struct {
 	manager *jobs.Manager
 	emit    func(event string, data ...any)
 
-	openFilesFn func(context.Context) ([]string, error)
-	revealFn    func(string) error
+	openFilesFn  func(context.Context) ([]string, error)
+	pickFFmpegFn func(context.Context) (string, error)
+	revealFn     func(string) error
 }
 
 // NewApp wires the real environment. It never fails; missing paths surface
@@ -162,6 +164,7 @@ func (a *App) loadSettings() {
 	s, err := config.Load(a.settingsPath)
 	a.mu.Lock()
 	a.settings = s
+	a.locator.Configured = s.FFmpegPath
 	a.mu.Unlock()
 	if err != nil {
 		a.notice("warn", fmt.Sprintf("설정을 읽지 못해 기본값을 사용합니다: %v", err))
@@ -328,6 +331,55 @@ func (a *App) prepareFFmpeg(ctx context.Context, allowDownload bool) error {
 	a.mu.Unlock()
 	a.emitStatus()
 	return nil
+}
+
+// PickFFmpeg lets the user point at an installed ffmpeg.exe when downloading is
+// not an option. The chosen binary is verified (ffprobe must sit beside it),
+// remembered in settings, and used immediately.
+func (a *App) PickFFmpeg() (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("앱이 아직 준비되지 않았습니다")
+	}
+	path, err := a.chooseFFmpeg()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("선택이 취소되었습니다")
+	}
+	a.mu.Lock()
+	verify := a.locator.Verify
+	a.mu.Unlock()
+	// The manual pick must be usable on its own: never fall back to another copy.
+	tools, err := ffmpeg.Locator{Override: path, Verify: verify}.Locate(a.ctx)
+	if err != nil {
+		return "", fmt.Errorf("선택한 FFmpeg를 사용할 수 없습니다(같은 폴더에 ffmpeg.exe와 ffprobe.exe가 있어야 합니다): %w", err)
+	}
+	a.mu.Lock()
+	a.tools = tools
+	a.ffErr = ""
+	a.settings.FFmpegPath = tools.FFmpeg
+	a.locator.Configured = tools.FFmpeg
+	next, settingsPath := a.settings, a.settingsPath
+	a.mu.Unlock()
+	if settingsPath != "" {
+		if err := config.Save(settingsPath, next); err != nil {
+			a.notice("warn", fmt.Sprintf("FFmpeg 경로를 저장하지 못했습니다: %v", err))
+		}
+	}
+	a.emitStatus()
+	a.notice("info", "선택한 FFmpeg를 사용합니다.")
+	return tools.FFmpeg, nil
+}
+
+func (a *App) chooseFFmpeg() (string, error) {
+	if a.pickFFmpegFn != nil {
+		return a.pickFFmpegFn(a.ctx)
+	}
+	return wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
+		Title:   "ffmpeg.exe 선택",
+		Filters: []wruntime.FileFilter{{DisplayName: "ffmpeg 실행 파일", Pattern: "ffmpeg.exe"}},
+	})
 }
 
 // OpenFileDialog opens the native multi-file picker.

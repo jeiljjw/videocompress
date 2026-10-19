@@ -5,12 +5,23 @@ interface Props {
   settings: Settings
   running: boolean
   onSave: (targetMB: number, partMB: number) => Promise<void>
+  /** Notified whenever the inputs become valid or invalid (spec: start is gated on this). */
+  onValidChange?: (valid: boolean) => void
 }
 
-export default function SettingsPanel({ settings, running, onSave }: Props) {
+/** validate returns the first problem with the entered values, or ''. */
+export function validateSettings(target: string, part: string): string {
+  const t = Number(target)
+  const p = Number(part)
+  if (!Number.isInteger(t) || t < 2 || t > 100) return '목표 크기는 2~100MB 사이의 정수여야 합니다.'
+  if (!Number.isInteger(p) || p < 1 || p >= t) return '조각 크기는 1MB 이상, 목표 크기보다 작아야 합니다.'
+  return ''
+}
+
+export default function SettingsPanel({ settings, running, onSave, onValidChange }: Props) {
   const [target, setTarget] = useState(String(settings.targetMB))
   const [part, setPart] = useState(String(settings.partMB))
-  const [error, setError] = useState('')
+  const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -18,13 +29,11 @@ export default function SettingsPanel({ settings, running, onSave }: Props) {
     setPart(String(settings.partMB))
   }, [settings.targetMB, settings.partMB])
 
-  const validate = (): string => {
-    const t = Number(target)
-    const p = Number(part)
-    if (!Number.isInteger(t) || t < 2 || t > 100) return '목표 크기는 2~100MB 사이의 정수여야 합니다.'
-    if (!Number.isInteger(p) || p < 1 || p >= t) return '조각 크기는 1MB 이상, 목표 크기보다 작아야 합니다.'
-    return ''
-  }
+  // Validate as the user types (spec §7) and let the parent gate the start button.
+  const error = validateSettings(target, part)
+  useEffect(() => {
+    onValidChange?.(error === '')
+  }, [error, onValidChange])
 
   return (
     <section className="panel" aria-label="크기 설정">
@@ -38,6 +47,7 @@ export default function SettingsPanel({ settings, running, onSave }: Props) {
           onChange={(e) => {
             setTarget(e.target.value)
             setSaved(false)
+            setSaveError('')
           }}
         />
       </label>
@@ -50,24 +60,24 @@ export default function SettingsPanel({ settings, running, onSave }: Props) {
           onChange={(e) => {
             setPart(e.target.value)
             setSaved(false)
+            setSaveError('')
           }}
         />
       </label>
       {error && <p className="error">{error}</p>}
-      {saved && !error && <p className="ok">저장했습니다.</p>}
+      {saveError && <p className="error">{saveError}</p>}
+      {saved && !error && !saveError && <p className="ok">저장했습니다.</p>}
       <button
         className="btn"
-        disabled={running}
+        disabled={running || error !== ''}
         onClick={async () => {
-          const message = validate()
-          setError(message)
+          setSaveError('')
           setSaved(false)
-          if (message) return
           try {
             await onSave(Number(target), Number(part))
             setSaved(true)
           } catch (e) {
-            setError(e instanceof Error ? e.message : String(e))
+            setSaveError(e instanceof Error ? e.message : String(e))
           }
         }}
       >

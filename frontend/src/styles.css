@@ -73,6 +73,7 @@ body {
 }
 .banner p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .banner__error { color: var(--err) !important; }
+.banner__actions { display: flex; flex-direction: column; gap: 8px; }
 
 .jobs { min-height: 60px; }
 .jobs__empty { color: var(--muted); font-size: 14px; }

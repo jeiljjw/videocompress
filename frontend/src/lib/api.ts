@@ -68,6 +68,7 @@ export interface AppAPI {
   GetFFmpegStatus(): Promise<FFmpegStatus>
   DownloadFFmpeg(): Promise<void>
   OpenFileDialog(): Promise<string[]>
+  PickFFmpeg(): Promise<string>
   RevealInExplorer(path: string): Promise<void>
   Quit(): Promise<void>
 }
