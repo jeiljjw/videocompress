@@ -5315,6 +5315,7 @@ type Options struct {
 	JSON       bool
 	DryRun     bool
 	FFmpegPath string
+	FFmpegSet  bool // --ffmpeg was given on the command line
 	NoDownload bool
 	ShowVer    bool
 	Files      []string
@@ -5376,6 +5377,11 @@ func ParseArgs(args []string, defaults config.Settings) (Options, error) {
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ffmpeg" {
+			opts.FFmpegSet = true
+		}
+	})
 	opts.Files = fs.Args()
 	return opts, nil
 }
@@ -5500,11 +5506,21 @@ func classify(paths []string) ([]string, []rejectedFile) {
 	return files, rejected
 }
 
-// acquireFFmpeg locates FFmpeg, downloading it once when allowed.
+// acquireFFmpeg locates FFmpeg, downloading it once when allowed. An explicit
+// --ffmpeg is authoritative: it is never silently replaced by another copy.
 func acquireFFmpeg(ctx context.Context, opts Options, deps Deps, stderr io.Writer) (ffmpeg.Tools, int) {
 	loc := deps.Locator
+	if opts.FFmpegSet && opts.FFmpegPath != "" {
+		only := ffmpeg.Locator{Override: opts.FFmpegPath, Verify: deps.Locator.Verify}
+		if tools, err := only.Locate(ctx); err == nil {
+			return tools, ExitOK
+		} else {
+			fmt.Fprintf(stderr, "지정한 FFmpeg를 사용할 수 없습니다: %s\n%v\nffmpeg와 ffprobe가 함께 있는지 확인하세요.\n", opts.FFmpegPath, err)
+			return ffmpeg.Tools{}, ExitNoFFmpeg
+		}
+	}
 	if opts.FFmpegPath != "" {
-		loc.Override = opts.FFmpegPath
+		loc.Override = opts.FFmpegPath // saved preference: still a candidate, not a hard requirement
 	}
 	if tools, err := loc.Locate(ctx); err == nil {
 		return tools, ExitOK
@@ -5781,7 +5797,8 @@ go build ./cmd/vc
 go run ./cmd/vc --version
 go run ./cmd/vc --dry-run --target 5 --part 4 "영상 파일.mp4"
 go run ./cmd/vc --target 5 --part 4 "영상 파일.mp4"          # 단일 압축
-go run ./cmd/vc --json --target 1 --part 1 "영상 파일.mp4"   # 분할 + JSON
+go run ./cmd/vc --json --target 2 --part 1 "영상 파일.mp4"   # 분할 + JSON
+go run ./cmd/vc --no-download --ffmpeg "없는경로\ffmpeg.exe" "영상 파일.mp4"  # 종료 코드 3
 ```
 기대: `--dry-run`은 인코딩 없이 계획만 출력하고, 압축 실행 시 `<이름>_compressed.mp4` 또는 `<이름>_partNN.mp4`가 원본 옆에 생성되며 원본은 수정되지 않는다.
 

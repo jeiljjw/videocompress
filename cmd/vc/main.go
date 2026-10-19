@@ -3,11 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"videocompress/internal/cli"
 )
 
-const version = "0.1.0"
-
 func main() {
-	fmt.Printf("vc %s\n", version)
-	os.Exit(0)
+	deps, err := cli.DefaultDeps()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "초기화 실패: %v\n", err)
+		os.Exit(cli.ExitUsage)
+	}
+	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr, deps))
 }
