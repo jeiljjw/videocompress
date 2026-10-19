@@ -17,6 +17,7 @@ import (
 	"videocompress/internal/engine"
 	"videocompress/internal/ffmpeg"
 	"videocompress/internal/jobs"
+	"videocompress/internal/logging"
 )
 
 // Event names emitted to the frontend.
@@ -49,6 +50,7 @@ type App struct {
 
 	cacheDir   string
 	tempRoot   string
+	logger     *logging.Logger
 	locator    ffmpeg.Locator
 	downloader ffmpeg.Downloader
 	newEngine  func(ffmpeg.Tools, string) *engine.Engine
@@ -78,7 +80,9 @@ func NewApp() *App {
 	a.locator.CacheDir = a.cacheDir
 	a.locator.LookPath = exec.LookPath
 	a.newEngine = func(tools ffmpeg.Tools, tempRoot string) *engine.Engine {
-		return engine.New(&ffmpeg.Client{Tools: tools}, tempRoot)
+		eng := engine.New(&ffmpeg.Client{Tools: tools, Logf: a.logf}, tempRoot)
+		eng.Logf = a.logf
+		return eng
 	}
 	a.emit = func(event string, data ...any) {
 		if a.ctx != nil {
@@ -96,9 +100,19 @@ type lazyProcessor struct{ app *App }
 func (p *lazyProcessor) Process(ctx context.Context, req engine.Request, onProgress func(engine.Progress)) (*engine.Result, error) {
 	eng, err := p.app.engineFor()
 	if err != nil {
+		p.app.logf("job %s: %v", req.JobID, err)
 		return nil, err
 	}
-	return eng.Process(ctx, req, onProgress)
+	p.app.logf("job %s start: %s (dryRun=%v)", req.JobID, req.InputPath, req.DryRun)
+	res, err := eng.Process(ctx, req, onProgress)
+	if err != nil {
+		p.app.logf("job %s failed: %v", req.JobID, err)
+		return nil, err
+	}
+	if res != nil {
+		p.app.logf("job %s done: mode=%s outputs=%d parts=%d lowQuality=%v", req.JobID, res.Mode, len(res.Outputs), res.Parts, res.LowQuality)
+	}
+	return res, err
 }
 
 func (a *App) engineFor() (*engine.Engine, error) {
@@ -120,18 +134,30 @@ func (a *App) engineFor() (*engine.Engine, error) {
 // startup loads settings, registers native file drops, and prepares FFmpeg.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// The log lives beside the FFmpeg cache: %LOCALAPPDATA%\VideoCompress\logs.
+	if a.cacheDir != "" {
+		if lg, err := logging.Open(filepath.Join(a.cacheDir, "logs")); err == nil {
+			a.logger = lg
+		}
+	}
+	a.logf("app starting: settings=%s cache=%s", a.settingsPath, a.cacheDir)
 	a.loadSettings()
 	a.cleanupStaleTemp()
 	wruntime.OnFileDrop(ctx, func(_, _ int, paths []string) {
 		a.AddFiles(paths)
 	})
 	if err := a.prepareFFmpeg(ctx, false); err != nil {
+		a.logf("ffmpeg unavailable: %v", err)
 		a.notice("error", err.Error())
+	} else {
+		a.logf("ffmpeg ready: %s", a.GetFFmpegStatus().Path)
 	}
 }
 
 func (a *App) shutdown(context.Context) {
 	a.manager.Cancel()
+	a.logf("app shutting down")
+	_ = a.logger.Close()
 }
 
 // beforeClose asks before quitting while jobs run; returns true to block close.
@@ -432,17 +458,36 @@ func (a *App) notice(level, message string) {
 	a.emit(EventNotice, map[string]string{"level": level, "message": message})
 }
 
-// cleanupStaleTemp removes scratch folders left behind by a crashed run.
+// logf appends a line to the app log. It is safe to call at any time: a nil
+// logger and write errors are both ignored.
+func (a *App) logf(format string, args ...any) {
+	a.logger.Printf(format, args...)
+}
+
+// cleanupStaleTemp removes scratch folders left behind by a crashed run: job
+// temp dirs and interrupted FFmpeg downloads.
 func (a *App) cleanupStaleTemp() {
-	if a.tempRoot == "" {
+	sweepStale(a.tempRoot)
+	if a.cacheDir != "" {
+		sweepStale(filepath.Join(a.cacheDir, "ffmpeg"))
+	}
+}
+
+// tempPrefixes are the only directory names sweepStale may delete, so a user's
+// own files that happen to live next to ours are never touched.
+var tempPrefixes = []string{"vc-job-", "ffmpeg-dl-"}
+
+// sweepStale deletes scratch directories older than a day under dir.
+func sweepStale(dir string) {
+	if dir == "" {
 		return
 	}
-	entries, err := os.ReadDir(a.tempRoot)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, en := range entries {
-		if !en.IsDir() {
+		if !en.IsDir() || !hasAnyPrefix(en.Name(), tempPrefixes) {
 			continue
 		}
 		info, err := en.Info()
@@ -450,7 +495,16 @@ func (a *App) cleanupStaleTemp() {
 			continue
 		}
 		if time.Since(info.ModTime()) > 24*time.Hour {
-			_ = os.RemoveAll(filepath.Join(a.tempRoot, en.Name()))
+			_ = os.RemoveAll(filepath.Join(dir, en.Name()))
 		}
 	}
+}
+
+func hasAnyPrefix(name string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }

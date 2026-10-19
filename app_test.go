@@ -12,6 +12,7 @@ import (
 	"videocompress/internal/engine"
 	"videocompress/internal/ffmpeg"
 	"videocompress/internal/jobs"
+	"videocompress/internal/logging"
 	"videocompress/internal/media"
 )
 
@@ -237,6 +238,74 @@ func TestConfiguredFFmpegPathIsUsed(t *testing.T) {
 	}
 	if st := a.GetFFmpegStatus(); !st.Found || st.Path != ff {
 		t.Fatalf("status = %+v (saved ffmpegPath must be a candidate)", st)
+	}
+}
+
+// The app log is the only record of what happened after a crash, so a job's
+// start and outcome must land in it.
+func TestLogFileCapturesJobLifecycle(t *testing.T) {
+	a := testApp(t)
+	lg, err := logging.Open(filepath.Join(a.cacheDir, "logs"))
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	a.logger = lg
+	defer lg.Close()
+
+	a.tools = ffmpeg.Tools{FFmpeg: "ffmpeg.exe", FFprobe: "ffprobe.exe"}
+	a.newEngine = func(ffmpeg.Tools, string) *engine.Engine { return engine.New(stubFF{}, a.tempRoot) }
+	if _, err := (&lazyProcessor{app: a}).Process(context.Background(), engine.Request{
+		JobID: "job-1", InputPath: "in.mp4", TargetBytes: 5_000_000, PartBytes: 4_000_000,
+	}, nil); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(a.cacheDir, "logs", logging.FileName))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "job job-1 start: in.mp4") || !strings.Contains(got, "job job-1 done") {
+		t.Fatalf("log = %q", got)
+	}
+}
+
+// A crashed run leaves scratch directories behind; the next start clears the
+// old ones without touching fresh work or unrelated files.
+func TestCleanupStaleTempSweepsJobsAndDownloads(t *testing.T) {
+	a := testApp(t)
+	old := time.Now().Add(-48 * time.Hour)
+	mk := func(dir, name string, mod time.Time) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	oldJob := mk(a.tempRoot, "vc-job-old", old)
+	freshJob := mk(a.tempRoot, "vc-job-new", time.Now())
+	keepJob := mk(a.tempRoot, "my-own-folder", old)
+
+	ffmpegDir := filepath.Join(a.cacheDir, "ffmpeg")
+	oldDl := mk(ffmpegDir, "ffmpeg-dl-old", old)
+	freshDl := mk(ffmpegDir, "ffmpeg-dl-new", time.Now())
+	keepBin := mk(ffmpegDir, "bin", old)
+
+	a.cleanupStaleTemp()
+
+	for _, gone := range []string{oldJob, oldDl} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed", gone)
+		}
+	}
+	for _, kept := range []string{freshJob, keepJob, freshDl, keepBin} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("%s should have been kept: %v", kept, err)
+		}
 	}
 }
 

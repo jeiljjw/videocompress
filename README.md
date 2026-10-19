@@ -5,7 +5,7 @@
 
 - 기본값: 목표 5MB, 조각 4MB (1MB = 1,000,000바이트)
 - 코덱: H.264 + AAC (`libx264 -preset medium -profile:v high -pix_fmt yuv420p`, 2-pass ABR)
-- 화질 하한: 1080p 1,500kbps / 720p 800kbps / 480p 400kbps. 480p에서도 목표를 못 맞추면 분할합니다.
+- 화질 하한: 1080p 1,500kbps / 720p 800kbps / 480p 400kbps. 480p에서도 목표를 못 맞추면 분할합니다. 해상도 사다리는 원본 방향(가로/세로/정사각)에 맞춰 적용되며 업스케일하지 않습니다.
 - FFmpeg는 최초 1회 자동으로 내려받습니다(사용자 설치 불필요, 약 115MB).
 
 ## 사용법 (GUI)
@@ -31,17 +31,21 @@ vc [옵션] <파일...>
   --out <폴더>     출력 폴더 (기본: 원본과 같은 폴더)
   --dry-run        인코딩 없이 계획만 출력
   --json           결과를 JSON으로 출력
+  --verbose        ffmpeg 명령과 stderr 마지막 20줄 출력
   --ffmpeg <경로>  사용할 ffmpeg 실행 파일
   --no-download    FFmpeg 자동 다운로드 금지
   --version        버전 출력
 ```
 
-예시:
+진행률은 표준 오류(stderr)로, 결과와 요약은 표준 출력(stdout)으로 나갑니다.
+여러 파일을 처리하면 `[1/3]`처럼 순번이 붙고 마지막에 `요약: 총 3개 · 성공 2 · 실패 1`이 출력됩니다.
+`--json`일 때 stdout에는 JSON만 나갑니다.
 
 ```powershell
 vc --dry-run --target 5 --part 4 "D:\videos\clip.mov"
 vc --target 5 --part 4 "D:\videos\clip.mov"
 vc --json --target 5 --part 4 D:\videos\clip.mp4
+vc --verbose "D:\videos\clip.mov" 2> ffmpeg.log
 ```
 
 종료 코드: `0` 성공(건너뜀 포함), `1` 처리 실패, `2` 사용법·설정 오류, `3` FFmpeg 없음/다운로드 실패, `130` 취소.
@@ -87,14 +91,21 @@ go test ./internal/ffmpeg -run TestInstallRealFFmpeg -v -timeout 30m
 | --- | --- |
 | 설정 | `%AppData%\VideoCompress\settings.json` |
 | FFmpeg | `%LocalAppData%\VideoCompress\ffmpeg\bin\` |
+| 로그 | `%LocalAppData%\VideoCompress\logs\app.log` (5MB에서 회전, 3개 보관) |
 | 임시 작업 | `%LocalAppData%\VideoCompress\temp\vc-job-*\` (작업 종료 시 삭제) |
 
 ## 문제 해결
 
-- **FFmpeg 다운로드 실패**: 네트워크/프록시를 확인하거나 [gyan.dev 빌드](https://www.gyan.dev/ffmpeg/builds/)를 직접 받아 `--ffmpeg <ffmpeg.exe 경로>`로 지정합니다.
+- **FFmpeg 다운로드 실패**: 네트워크/프록시를 확인하거나, 이미 설치된 FFmpeg를 GUI의 **FFmpeg 직접 선택** 버튼(같은 폴더에 `ffmpeg.exe`와 `ffprobe.exe`가 있어야 함)으로 지정합니다. CLI에서는 [gyan.dev 빌드](https://www.gyan.dev/ffmpeg/builds/)를 받아 `--ffmpeg <ffmpeg.exe 경로>`로 지정합니다.
 - **Windows SmartScreen 경고**: 서명 없는 실행 파일이라 처음 실행 시 경고가 뜰 수 있습니다. "추가 정보 → 실행"을 선택합니다.
 - **압축이 오래 걸림**: 2-pass 인코딩은 원본 길이의 1~3배 시간이 걸릴 수 있습니다. GUI에서는 취소할 수 있습니다.
 - **화질이 낮음**: 목표 크기를 키우거나 조각 크기를 줄여 분할되게 하세요.
+- **자세한 원인 확인**: `%LocalAppData%\VideoCompress\logs\app.log`에 작업 시작/종료와 FFmpeg 명령, 오류가 기록됩니다. CLI는 `--verbose`를 붙이세요.
+
+## 라이선스 고지
+
+사용·번들된 서드파티 소프트웨어 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.
+FFmpeg는 배포물에 포함되지 않고 최초 실행 시 사용자 환경으로 내려받습니다.
 
 ## v1 범위 밖
 

@@ -8016,3 +8016,39 @@ git commit -m "docs: readme and final verification pass"
 - 목표 크기를 넘기지 못하는 단일 결과물이 최종 위치에 남지 않는다(초과 시 재시도 → 해상도 하향 → 분할).
 - 어떤 실패/취소 상황에서도 원본이 변경되지 않고, 최종 폴더에 불완전한 산출물이 남지 않는다.
 - 모든 사용자 노출 문자열이 한국어이고, 오류 메시지가 원인과 다음 행동을 알려준다.
+
+---
+
+## 후속 수정 (구현 후 코드 리뷰 반영)
+
+Task 1~17 완료 후 브랜치 전체를 리뷰해 다음을 수정했다. 각 항목은 스펙과 대조하고 테스트로 고정했다.
+
+### A. 이벤트 페이로드와 시작 게이팅 (커밋 `fix(ui)`)
+
+- **치명적 버그**: Wails v2는 이벤트 핸들러를 `callback.apply(null, data)`로 호출하므로 첫 인자가 곧 페이로드(`Job[]`)다. 이전 `unwrap`이 이를 단일 객체로 바꿔 작업 목록 렌더링이 예외로 죽었다. `frontend/src/lib/payload.ts`의 `jobListPayload`/`objectPayload`가 두 호출 형태를 모두 처리하고, 실제로 `queue:update`를 발화하는 `App` 테스트를 추가했다.
+- 낙관적 추가는 id로 중복 제거(`mergeJobs`).
+- 크기 입력을 타이핑하는 즉시 검증하고(스펙 §7) 유효하지 않으면 시작 버튼을 비활성화한다.
+- GUI에 **FFmpeg 직접 선택**(`App.PickFFmpeg`) 추가: 선택한 바이너리(같은 폴더의 `ffprobe.exe` 포함)를 검증해 즉시 사용하고 `settings.json`에 저장한다. 이 과정에서 `settings.json`의 `ffmpegPath`가 `Locator.Configured`에 전달되지 않던 실제 버그도 고쳤다.
+
+### B. 세로/정사각 원본의 해상도 사다리 (커밋 `fix(plan)`)
+
+스펙 §4.3의 사다리는 각 단계마다 가로·세로 박스를 모두 나열한다. 이전 구현은 세로 영상(1080×1920)을 가로 박스로 눌러 608×1080으로 만들었다. `boxFor`가 원본 방향에 맞춰 박스를 회전시킨다(업스케일 금지 유지).
+
+### C. CLI 출력과 이벤트 스로틀 (커밋 `feat(cli)`)
+
+- 진행률은 stderr, 결과·요약은 stdout(스펙 §8). `--json`일 때 stdout은 JSON만 포함한다.
+- 사람이 읽는 모드는 `[i/n]` 순번과 마지막 요약 줄을 출력한다.
+- `--verbose` 추가: ffmpeg 명령줄과 실패 시 stderr 마지막 20줄. 이를 위해 `Deps.NewProcessor`가 로거를 받는다.
+- `queue:update` 스냅샷은 100ms로 스로틀한다(스펙 §3).
+
+### D. 엔진 견고성 (커밋 `fix(engine)`)
+
+- 단일 출력이 목표 크기 이하면서 구조적으로 잘못된 경우(비디오 스트림 없음/길이 불일치) 사다리를 더 내려가지 않고 실제 원인으로 즉시 실패한다.
+- 분할 조각의 faststart 리먹스 후 크기를 다시 측정해, 리먹스로 조각 크기를 넘긴 경우 해당 구간을 재인코딩한다(검증 실패로 작업 전체를 버리지 않음).
+
+### E. 로그·정리·고지 (커밋 `chore(logging)`)
+
+- `internal/logging`: `%LocalAppData%\VideoCompress\logs\app.log`, 5MB 회전, 3개 보관(스펙 §9). GUI가 `engine.Logf`/`ffmpeg.Client.Logf`에 연결해 작업 시작/종료와 FFmpeg 오류를 기록한다.
+- 시작 시 `vc-job-*`뿐 아니라 중단된 `ffmpeg-dl-*` 임시 폴더도 정리한다(24시간 초과, 알려진 접두사만).
+- `THIRD_PARTY_NOTICES.md` 추가(스펙 §11)와 README 갱신(`--verbose`, 진행률 위치, 로그 경로, 직접 선택).
+
