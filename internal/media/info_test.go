@@ -105,6 +105,18 @@ func TestParseProbeErrors(t *testing.T) {
 	}
 }
 
+func TestParseProbeStartTime(t *testing.T) {
+	data := `{"streams":[{"codec_type":"video","codec_name":"h264","width":10,"height":10}],
+	          "format":{"duration":"5.0","start_time":"0.024"}}`
+	info, err := ParseProbeJSON([]byte(data), "a.mp4", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.StartTime != 0.024 {
+		t.Fatalf("start time = %v", info.StartTime)
+	}
+}
+
 func TestHasVideoExt(t *testing.T) {
 	yes := []string{"a.mp4", "A.MP4", "b.mov", "c.mkv", "d.webm", "e.avi", "f.m4v", "g.wmv"}
 	no := []string{"a.txt", "b.jpg", "noext", "c"}

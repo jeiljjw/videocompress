@@ -2623,7 +2623,8 @@ func TestVerifySingle(t *testing.T) {
 }
 
 func TestVerifyParts(t *testing.T) {
-	src := &media.Info{Duration: 180, Width: 1920, Height: 1080}
+	// Source duration must equal the sum of the parts for the happy path.
+	src := &media.Info{Duration: 90, Width: 1920, Height: 1080}
 	parts := []*media.Info{
 		{SizeBytes: 3_900_000, Duration: 30, Width: 1280, Height: 720, StartTime: 0},
 		{SizeBytes: 3_900_000, Duration: 30, Width: 1280, Height: 720, StartTime: 0},

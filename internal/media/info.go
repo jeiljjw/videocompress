@@ -30,6 +30,7 @@ type Info struct {
 	Path       string
 	SizeBytes  int64
 	Duration   float64
+	StartTime  float64
 	Width      int
 	Height     int
 	VideoCodec string
@@ -62,8 +63,9 @@ type probeSideData struct {
 }
 
 type probeFormat struct {
-	Duration string `json:"duration"`
-	Size     string `json:"size"`
+	Duration  string `json:"duration"`
+	StartTime string `json:"start_time"`
+	Size      string `json:"size"`
 }
 
 // ParseProbeJSON converts ffprobe -print_format json output into Info.
@@ -99,6 +101,7 @@ func ParseProbeJSON(data []byte, path string, sizeBytes int64) (*Info, error) {
 	info.Width, info.Height = video.Width, video.Height
 
 	info.Duration = parseDuration(raw.Format.Duration)
+	info.StartTime = parseDuration(raw.Format.StartTime)
 	if info.Duration <= 0 {
 		for _, s := range raw.Streams {
 			if d := parseDuration(s.Duration); d > info.Duration {
