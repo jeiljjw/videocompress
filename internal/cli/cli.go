@@ -462,12 +462,13 @@ func humanBytes(n int64) string {
 }
 
 // progressPrinter keeps a single updating status line on stderr and writes
-// finished-file lines to stdout. It is silent in JSON mode so stdout stays
-// machine-readable (spec §8).
+// finished-file lines to stdout. In JSON mode the stdout lines are suppressed so
+// the JSON stays machine-readable, while progress keeps going to stderr so a long
+// run still shows activity (spec §8).
 type progressPrinter struct {
 	progress io.Writer
 	out      io.Writer
-	quiet    bool
+	quiet    bool // suppress stdout lines (JSON mode)
 	label    string
 	prefix   string
 	last     float64
@@ -479,9 +480,6 @@ func newProgressPrinter(progress, out io.Writer, quiet bool, label, prefix strin
 }
 
 func (p *progressPrinter) update(pr engine.Progress) {
-	if p.quiet {
-		return
-	}
 	if pr.Percent < p.last {
 		pr.Percent = p.last
 	}
@@ -495,9 +493,7 @@ func (p *progressPrinter) update(pr engine.Progress) {
 }
 
 func (p *progressPrinter) close() {
-	if !p.quiet {
-		p.clear()
-	}
+	p.clear()
 }
 
 func (p *progressPrinter) clear() {

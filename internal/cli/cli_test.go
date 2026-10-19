@@ -251,6 +251,23 @@ func TestParseArgsUsesDefaults(t *testing.T) {
 	}
 }
 
+// --json keeps stdout parseable but must still show progress on stderr, or a
+// long encode looks hung.
+func TestJSONKeepsStdoutPureAndProgressOnStderr(t *testing.T) {
+	src := tmpVideo(t, "movie.mp4")
+	var out, errBuf bytes.Buffer
+	if code := Run([]string{"--json", src}, &out, &errBuf, testDeps(t, &fakeProc{})); code != ExitOK {
+		t.Fatalf("code = %d stderr=%s", code, errBuf.String())
+	}
+	var report map[string]any
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not pure json: %v\n%q", err, out.String())
+	}
+	if !strings.Contains(errBuf.String(), "압축 중") {
+		t.Fatalf("progress should still reach stderr: %q", errBuf.String())
+	}
+}
+
 // Progress belongs on stderr; stdout carries only results so a caller can pipe
 // it (spec §8).
 func TestProgressGoesToStderrAndResultsToStdout(t *testing.T) {
