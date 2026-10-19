@@ -18,13 +18,15 @@ func main() {
 		Title:     "VideoCompress",
 		Width:     1080,
 		Height:    760,
-		MinWidth:  900,
-		MinHeight: 600,
+		MinWidth:  940,
+		MinHeight: 620,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup: app.startup,
-		Bind:      []interface{}{app},
+		OnStartup:     app.startup,
+		OnShutdown:    app.shutdown,
+		OnBeforeClose: app.beforeClose,
+		Bind:          []interface{}{app},
 	})
 	if err != nil {
 		log.Fatal(err)
