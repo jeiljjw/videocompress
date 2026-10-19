@@ -183,6 +183,15 @@ export default defineConfig({
 `frontend/src/test-setup.ts`:
 ```ts
 import '@testing-library/jest-dom/vitest'
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+// Vitest is configured without global test APIs, so Testing Library's automatic
+// cleanup is not registered for us. Without this, each render() leaves its DOM
+// behind and later queries in the same file match multiple elements.
+afterEach(() => {
+  cleanup()
+})
 ```
 
 `frontend/tsconfig.json` (템플릿을 아래로 교체):
@@ -7194,6 +7203,7 @@ npm --prefix frontend run test -- --run src/components src/App.test.tsx
 `frontend/src/components/DropZone.tsx`:
 ```tsx
 import { useCallback, useState } from 'react'
+import type { DragEvent } from 'react'
 
 interface Props {
   disabled: boolean
@@ -7204,7 +7214,7 @@ export default function DropZone({ disabled, onPick }: Props) {
   const [hover, setHover] = useState(false)
 
   const handleDragOver = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
+    (e: DragEvent<HTMLDivElement>) => {
       e.preventDefault()
       if (!disabled) setHover(true)
     },
@@ -7282,7 +7292,8 @@ export default function JobRow({ job, running, onReveal, onRemove }: Props) {
         <div className="job__bar-fill" style={{ width: `${percent}%` }} />
       </div>
       <div className="job__meta">
-        <span>{summarizeJob(job)}</span>
+        {/* A failed job shows its message once, in the error paragraph below. */}
+        {job.status !== 'failed' && <span>{summarizeJob(job)}</span>}
         {job.status === 'running' && <span className="job__stage">{stageLabel(job.stage)}</span>}
         {job.status === 'done' && job.result && (
           <span className="job__detail">
