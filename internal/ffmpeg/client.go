@@ -57,6 +57,9 @@ func (c *Client) Run(ctx context.Context, args []string, totalSec float64, onPro
 	}, args...)
 	cmd := exec.CommandContext(ctx, c.Tools.FFmpeg, full...)
 	cmd.SysProcAttr = hiddenProcAttr()
+	if c.Logf != nil {
+		c.Logf("$ %s %s", c.Tools.FFmpeg, strings.Join(full, " "))
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -86,6 +89,12 @@ func (c *Client) Run(ctx context.Context, args []string, totalSec float64, onPro
 	if waitErr != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if c.Logf != nil {
+			c.Logf("ffmpeg exited: %v", waitErr)
+			for _, line := range lastLines(stderr.String(), 20) {
+				c.Logf("  %s", line)
+			}
 		}
 		return fmt.Errorf("ffmpeg 실패: %w\n%s", waitErr, stderr.String())
 	}
@@ -158,3 +167,22 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 }
 
 func (w *tailWriter) String() string { return w.buf.String() }
+
+// lastLines returns at most n non-empty trailing lines of s.
+func lastLines(s string, n int) []string {
+	lines := strings.Split(strings.TrimRight(s, "\r\n"), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	var out []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}

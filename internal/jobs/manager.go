@@ -54,14 +54,15 @@ type Options struct {
 
 // Manager owns the queue and the single worker goroutine.
 type Manager struct {
-	mu      sync.Mutex
-	jobs    []*Job
-	queue   []string
-	proc    Processor
-	notify  func()
-	cancel  context.CancelFunc
-	running bool
-	seq     int
+	mu       sync.Mutex
+	jobs     []*Job
+	queue    []string
+	proc     Processor
+	notify   func()
+	cancel   context.CancelFunc
+	running  bool
+	seq      int
+	lastEmit time.Time // last progress-driven snapshot (100ms throttle)
 }
 
 // NewManager returns a manager that runs jobs through proc. notify is called
@@ -254,8 +255,14 @@ func (m *Manager) run(ctx context.Context, opts Options) {
 			m.mu.Lock()
 			changed := false
 			if j := m.findLocked(id); j != nil {
-				if p.Stage != j.Stage || math.Abs(p.Percent-j.Percent) >= 0.5 || p.Percent >= 100 {
+				stageChanged := p.Stage != j.Stage
+				// Snapshots are throttled to 100ms (spec §3) so a fast encoder
+				// cannot flood the UI; a stage change or completion always goes
+				// through, and a dropped update is re-sent once the gate opens.
+				due := time.Since(m.lastEmit) >= 100*time.Millisecond
+				if stageChanged || p.Percent >= 100 || (math.Abs(p.Percent-j.Percent) >= 0.5 && due) {
 					j.Stage, j.Percent = p.Stage, p.Percent
+					m.lastEmit = time.Now()
 					changed = true
 				}
 			}

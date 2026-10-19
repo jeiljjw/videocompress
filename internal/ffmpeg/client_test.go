@@ -2,6 +2,9 @@ package ffmpeg
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -40,5 +43,43 @@ func TestClientRunUnknownBinaryFails(t *testing.T) {
 	err := c.Run(context.Background(), []string{"-version"}, 0, nil)
 	if err == nil {
 		t.Fatal("want error")
+	}
+}
+
+// --verbose shows the ffmpeg command and the tail of its stderr.
+func TestClientLogsCommandAndStderrTail(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	c := &Client{
+		Tools: Tools{FFmpeg: "definitely-not-ffmpeg"},
+		Logf: func(format string, args ...any) {
+			mu.Lock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		},
+	}
+	if err := c.Run(context.Background(), []string{"-i", "in.mp4"}, 0, nil); err == nil {
+		t.Fatal("want error")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) == 0 {
+		t.Fatal("the logger was never called")
+	}
+	if !strings.Contains(lines[0], "in.mp4") || !strings.Contains(lines[0], "definitely-not-ffmpeg") {
+		t.Fatalf("first log line = %q", lines[0])
+	}
+}
+
+func TestLastLines(t *testing.T) {
+	got := lastLines("one\n\n two \r\nthree\n", 2)
+	if len(got) != 2 || got[0] != " two " || got[1] != "three" {
+		t.Fatalf("got %q", got)
+	}
+	if got := lastLines("solo", 20); len(got) != 1 || got[0] != "solo" {
+		t.Fatalf("got %q", got)
+	}
+	if got := lastLines("", 5); len(got) != 0 {
+		t.Fatalf("got %q", got)
 	}
 }

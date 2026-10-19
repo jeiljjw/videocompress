@@ -39,6 +39,7 @@ type Options struct {
 	OutDir     string
 	JSON       bool
 	DryRun     bool
+	Verbose    bool
 	FFmpegPath string
 	FFmpegSet  bool // --ffmpeg was given on the command line
 	NoDownload bool
@@ -53,9 +54,12 @@ type Processor interface {
 
 // Deps lets tests replace the parts that touch FFmpeg.
 type Deps struct {
-	Locator      ffmpeg.Locator
-	Downloader   ffmpeg.Downloader
-	NewProcessor func(ffmpeg.Tools) Processor
+	Locator    ffmpeg.Locator
+	Downloader ffmpeg.Downloader
+	// NewProcessor builds the engine. The logger receives the ffmpeg command
+	// line and the tail of ffmpeg's stderr when --verbose is used; it is nil
+	// otherwise.
+	NewProcessor func(ffmpeg.Tools, func(format string, args ...any)) Processor
 	SettingsPath string
 }
 
@@ -79,8 +83,10 @@ func DefaultDeps() (Deps, error) {
 			CacheDir: cache,
 			LookPath: exec.LookPath,
 		},
-		NewProcessor: func(tools ffmpeg.Tools) Processor {
-			return engine.New(&ffmpeg.Client{Tools: tools}, filepath.Join(cache, "temp"))
+		NewProcessor: func(tools ffmpeg.Tools, logf func(format string, args ...any)) Processor {
+			eng := engine.New(&ffmpeg.Client{Tools: tools, Logf: logf}, filepath.Join(cache, "temp"))
+			eng.Logf = logf
+			return eng
 		},
 		SettingsPath: settingsPath,
 	}, nil
@@ -96,6 +102,7 @@ func ParseArgs(args []string, defaults config.Settings) (Options, error) {
 	fs.StringVar(&opts.OutDir, "out", "", "출력 폴더")
 	fs.BoolVar(&opts.JSON, "json", false, "JSON으로 출력")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "계획만 확인")
+	fs.BoolVar(&opts.Verbose, "verbose", false, "ffmpeg 명령과 오류 출력 표시")
 	fs.StringVar(&opts.FFmpegPath, "ffmpeg", "", "ffmpeg 실행 파일 경로")
 	fs.BoolVar(&opts.NoDownload, "no-download", false, "FFmpeg 자동 다운로드 금지")
 	fs.BoolVar(&opts.ShowVer, "version", false, "버전 출력")
@@ -122,6 +129,7 @@ const usageText = `사용법: vc [옵션] <파일...>
   --out <폴더>     출력 폴더 (기본: 원본과 같은 폴더)
   --dry-run        인코딩 없이 계획만 출력
   --json           결과를 JSON으로 출력
+  --verbose        ffmpeg 명령과 stderr 마지막 20줄 출력
   --ffmpeg <경로>  사용할 ffmpeg 실행 파일
   --no-download    FFmpeg 자동 다운로드 금지
   --version        버전 출력
@@ -174,12 +182,18 @@ func Run(args []string, stdout, stderr io.Writer, deps Deps) int {
 	if code != ExitOK {
 		return code
 	}
-	proc := deps.NewProcessor(tools)
+	var logf func(format string, args ...any)
+	if opts.Verbose {
+		logf = func(format string, args ...any) {
+			fmt.Fprintf(stderr, "[ffmpeg] "+format+"\n", args...)
+		}
+	}
+	proc := deps.NewProcessor(tools, logf)
 
 	results := make([]fileResult, 0, len(files))
 	exit := ExitOK
-	for _, f := range files {
-		r := processOne(ctx, proc, opts, f, stdout)
+	for i, f := range files {
+		r := processOne(ctx, proc, opts, f, stdout, stderr, i+1, len(files))
 		results = append(results, r)
 		switch r.Status {
 		case "failed":
@@ -195,6 +209,8 @@ func Run(args []string, stdout, stderr io.Writer, deps Deps) int {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(jsonReport(results, opts, exit))
+	} else if len(results) > 1 {
+		fmt.Fprintln(stdout, summaryLine(results))
 	}
 	return exit
 }
@@ -308,9 +324,32 @@ func jsonReport(results []fileResult, opts Options, exit int) map[string]any {
 	}
 }
 
-func processOne(ctx context.Context, proc Processor, opts Options, input string, stdout io.Writer) fileResult {
+// summaryLine reports how the whole run ended, so a batch stays readable when
+// some files fail (spec §8).
+func summaryLine(results []fileResult) string {
+	counts := map[string]int{}
+	for _, r := range results {
+		counts[r.Status]++
+	}
+	order := []struct{ status, label string }{
+		{"done", "성공"},
+		{"skipped", "건너뜀"},
+		{"failed", "실패"},
+		{"canceled", "취소"},
+	}
+	var parts []string
+	for _, o := range order {
+		if n := counts[o.status]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", o.label, n))
+		}
+	}
+	return fmt.Sprintf("요약: 총 %d개 · %s", len(results), strings.Join(parts, " · "))
+}
+
+func processOne(ctx context.Context, proc Processor, opts Options, input string, stdout, stderr io.Writer, index, total int) fileResult {
 	started := time.Now()
-	printer := newProgressPrinter(stdout, opts.JSON, filepath.Base(input))
+	prefix := fmt.Sprintf("[%d/%d] ", index, total)
+	printer := newProgressPrinter(stderr, stdout, opts.JSON, filepath.Base(input), prefix)
 	res, err := proc.Process(ctx, engine.Request{
 		InputPath:   input,
 		OutDir:      opts.OutDir,
@@ -422,18 +461,21 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1fMB", float64(n)/unit)
 }
 
-// progressPrinter keeps a single updating status line. It is silent in JSON
-// mode so stdout stays machine-readable.
+// progressPrinter keeps a single updating status line on stderr and writes
+// finished-file lines to stdout. It is silent in JSON mode so stdout stays
+// machine-readable (spec §8).
 type progressPrinter struct {
-	w      io.Writer
-	quiet  bool
-	label  string
-	last   float64
-	lastAt time.Time
+	progress io.Writer
+	out      io.Writer
+	quiet    bool
+	label    string
+	prefix   string
+	last     float64
+	lastAt   time.Time
 }
 
-func newProgressPrinter(w io.Writer, quiet bool, label string) *progressPrinter {
-	return &progressPrinter{w: w, quiet: quiet, label: label}
+func newProgressPrinter(progress, out io.Writer, quiet bool, label, prefix string) *progressPrinter {
+	return &progressPrinter{progress: progress, out: out, quiet: quiet, label: label, prefix: prefix}
 }
 
 func (p *progressPrinter) update(pr engine.Progress) {
@@ -449,21 +491,25 @@ func (p *progressPrinter) update(pr engine.Progress) {
 	}
 	p.last = pr.Percent
 	p.lastAt = now
-	fmt.Fprintf(p.w, "\r%s: %s %.0f%%    ", p.label, stageLabel(pr.Stage), pr.Percent)
+	fmt.Fprintf(p.progress, "\r%s: %s %.0f%%    ", p.label, stageLabel(pr.Stage), pr.Percent)
 }
 
 func (p *progressPrinter) close() {
 	if !p.quiet {
-		fmt.Fprint(p.w, "\r"+strings.Repeat(" ", 60)+"\r")
+		p.clear()
 	}
+}
+
+func (p *progressPrinter) clear() {
+	fmt.Fprint(p.progress, "\r"+strings.Repeat(" ", 60)+"\r")
 }
 
 func (p *progressPrinter) println(format string, args ...any) {
 	if p.quiet {
 		return
 	}
-	fmt.Fprint(p.w, "\r"+strings.Repeat(" ", 60)+"\r")
-	fmt.Fprintf(p.w, format+"\n", args...)
+	p.clear()
+	fmt.Fprintf(p.out, p.prefix+format+"\n", args...)
 }
 
 func stageLabel(stage string) string {

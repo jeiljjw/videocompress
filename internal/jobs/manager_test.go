@@ -15,11 +15,12 @@ import (
 )
 
 type fakeProc struct {
-	mu     sync.Mutex
-	calls  []engine.Request
-	delay  time.Duration
-	failOn map[string]error
-	skips  map[string]bool
+	mu       sync.Mutex
+	calls    []engine.Request
+	delay    time.Duration
+	failOn   map[string]error
+	skips    map[string]bool
+	progress []engine.Progress
 }
 
 func (f *fakeProc) Process(ctx context.Context, req engine.Request, onProgress func(engine.Progress)) (*engine.Result, error) {
@@ -28,9 +29,15 @@ func (f *fakeProc) Process(ctx context.Context, req engine.Request, onProgress f
 	delay := f.delay
 	err := f.failOn[req.InputPath]
 	skip := f.skips[req.InputPath]
+	steps := f.progress
 	f.mu.Unlock()
 	if onProgress != nil {
-		onProgress(engine.Progress{Stage: "compressing 720p", Percent: 50})
+		if len(steps) == 0 {
+			onProgress(engine.Progress{Stage: "compressing 720p", Percent: 50})
+		}
+		for _, p := range steps {
+			onProgress(p)
+		}
 	}
 	if delay > 0 {
 		select {
@@ -105,6 +112,41 @@ func TestAddFiltersAndValidates(t *testing.T) {
 	snap := m.Snapshot()
 	if len(snap) != 3 {
 		t.Fatalf("snapshot len = %d", len(snap))
+	}
+}
+
+// Snapshots are throttled to 100ms: back-to-back progress jumps must not each
+// produce an event, because the UI redraws a full snapshot per event.
+func TestProgressSnapshotsAreThrottled(t *testing.T) {
+	proc := &fakeProc{progress: []engine.Progress{
+		{Stage: "compressing 720p", Percent: 10},
+		{Stage: "compressing 720p", Percent: 90},
+	}}
+	var mu sync.Mutex
+	var percents []float64
+	var m *Manager
+	m = NewManager(proc, func() {
+		mu.Lock()
+		for _, j := range m.Snapshot() {
+			percents = append(percents, j.Percent)
+		}
+		mu.Unlock()
+	})
+	m.Add(tmpVideo(t, "a.mp4"))
+	if err := m.Start(Options{TargetBytes: 5_000_000, PartBytes: 4_000_000}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return !m.IsRunning() })
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range percents {
+		if p == 90 {
+			t.Fatalf("the throttled update was published: %v", percents)
+		}
+	}
+	if len(percents) == 0 || percents[len(percents)-1] != 100 {
+		t.Fatalf("final percent should still be published: %v", percents)
 	}
 }
 

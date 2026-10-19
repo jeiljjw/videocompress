@@ -55,7 +55,7 @@ func testDeps(t *testing.T, proc Processor) Deps {
 			Verify:   func(context.Context, string) error { return nil },
 			LookPath: func(string) (string, error) { return "", errors.New("not on path") },
 		},
-		NewProcessor: func(ffmpeg.Tools) Processor { return proc },
+		NewProcessor: func(ffmpeg.Tools, func(string, ...any)) Processor { return proc },
 		SettingsPath: filepath.Join(dir, "settings.json"),
 	}
 }
@@ -248,5 +248,69 @@ func TestParseArgsUsesDefaults(t *testing.T) {
 	}
 	if opts.TargetMB != 7 || opts.PartMB != 3 || !opts.JSON || len(opts.Files) != 1 {
 		t.Fatalf("opts = %+v", opts)
+	}
+}
+
+// Progress belongs on stderr; stdout carries only results so a caller can pipe
+// it (spec §8).
+func TestProgressGoesToStderrAndResultsToStdout(t *testing.T) {
+	src := tmpVideo(t, "movie.mp4")
+	var out, errBuf bytes.Buffer
+	if code := Run([]string{src}, &out, &errBuf, testDeps(t, &fakeProc{})); code != ExitOK {
+		t.Fatalf("code = %d stderr=%s", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "압축 중") {
+		t.Fatalf("progress should be on stderr: %q", errBuf.String())
+	}
+	if strings.Contains(out.String(), "압축 중") {
+		t.Fatalf("progress must not pollute stdout: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "완료") || !strings.Contains(out.String(), "movie.mp4") {
+		t.Fatalf("result line missing from stdout: %q", out.String())
+	}
+}
+
+func TestMultiFileOutputHasCounterAndSummary(t *testing.T) {
+	a := tmpVideo(t, "a.mp4")
+	b := tmpVideo(t, "b.mp4")
+	var out, errBuf bytes.Buffer
+	if code := Run([]string{a, b}, &out, &errBuf, testDeps(t, &fakeProc{})); code != ExitOK {
+		t.Fatalf("code = %d stderr=%s", code, errBuf.String())
+	}
+	for _, want := range []string{"[1/2]", "[2/2]", "요약", "성공 2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout missing %q: %q", want, out.String())
+		}
+	}
+}
+
+func TestVerbosePassesLoggerToProcessor(t *testing.T) {
+	src := tmpVideo(t, "movie.mp4")
+	var loggers []func(string, ...any)
+	deps := testDeps(t, &fakeProc{})
+	deps.NewProcessor = func(_ ffmpeg.Tools, logf func(string, ...any)) Processor {
+		loggers = append(loggers, logf)
+		return &fakeProc{}
+	}
+
+	var out, errBuf bytes.Buffer
+	if code := Run([]string{src}, &out, &errBuf, deps); code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	if len(loggers) != 1 || loggers[0] != nil {
+		t.Fatalf("logger must be nil without --verbose: %v", loggers)
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if code := Run([]string{"--verbose", src}, &out, &errBuf, deps); code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	if len(loggers) != 2 || loggers[1] == nil {
+		t.Fatal("--verbose should hand the processor a logger")
+	}
+	loggers[1]("$ ffmpeg -i in.mp4")
+	if !strings.Contains(errBuf.String(), "[ffmpeg] $ ffmpeg -i in.mp4") {
+		t.Fatalf("stderr = %q", errBuf.String())
 	}
 }
