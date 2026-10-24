@@ -76,6 +76,8 @@ export interface AppAPI {
 interface WailsRuntime {
   EventsOn(name: string, cb: (...data: unknown[]) => void): () => void
   EventsOff(name: string, ...additional: string[]): void
+  OnFileDrop?(cb: (x: number, y: number, paths: string[]) => void, useDropTarget?: boolean): void
+  OnFileDropOff?(): void
 }
 
 interface WailsWindow extends Window {
@@ -119,5 +121,17 @@ export function on(name: string, cb: (...data: unknown[]) => void): () => void {
     } else {
       rt.EventsOff(name)
     }
+  }
+}
+
+/** enableFileDrop activates the Wails drag-and-drop listener in the webview. */
+export function enableFileDrop(cb?: (x: number, y: number, paths: string[]) => void, useDropTarget = false): () => void {
+  const rt = runtime()
+  if (!rt?.OnFileDrop) {
+    return () => {}
+  }
+  rt.OnFileDrop(cb ?? (() => {}), useDropTarget)
+  return () => {
+    rt.OnFileDropOff?.()
   }
 }

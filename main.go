@@ -23,6 +23,10 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: false,
+		},
 		OnStartup:     app.startup,
 		OnShutdown:    app.shutdown,
 		OnBeforeClose: app.beforeClose,

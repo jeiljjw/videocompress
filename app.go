@@ -146,6 +146,7 @@ func (a *App) startup(ctx context.Context) {
 	a.loadSettings()
 	a.cleanupStaleTemp()
 	wruntime.OnFileDrop(ctx, func(_, _ int, paths []string) {
+		a.logf("native file drop: %d files: %v", len(paths), paths)
 		a.AddFiles(paths)
 	})
 	if err := a.prepareFFmpeg(ctx, false); err != nil {

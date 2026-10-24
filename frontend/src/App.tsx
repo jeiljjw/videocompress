@@ -9,6 +9,7 @@ import {
   EVENT_NOTICE,
   EVENT_QUEUE_UPDATE,
   app,
+  enableFileDrop,
   on,
   requireApp,
 } from './lib/api'
@@ -67,10 +68,12 @@ export default function App() {
       const n = objectPayload<Notice>(data)
       if (n && typeof n.message === 'string') setNotice(n.message)
     })
+    const offDrop = enableFileDrop(() => {}, false)
     return () => {
       offQueue()
       offStatus()
       offNotice()
+      offDrop()
     }
   }, [api])
 

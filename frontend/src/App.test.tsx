@@ -42,6 +42,8 @@ function installBinding(overrides: Record<string, unknown> = {}) {
       }
     },
     EventsOff: vi.fn(),
+    OnFileDrop: vi.fn(),
+    OnFileDropOff: vi.fn(),
   }
   return { api, handlers }
 }
@@ -161,5 +163,12 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('목표 크기 (MB)'), { target: { value: '1' } })
     await waitFor(() => expect(screen.getByRole('button', { name: '압축 시작' })).toBeDisabled())
     expect(screen.getByText(/목표 크기는/)).toBeInTheDocument()
+  })
+
+  it('activates Wails file drop listeners on mount', async () => {
+    installBinding()
+    render(<App />)
+    const runtime = (window as unknown as { runtime: { OnFileDrop: ReturnType<typeof vi.fn> } }).runtime
+    await waitFor(() => expect(runtime.OnFileDrop).toHaveBeenCalledWith(expect.any(Function), false))
   })
 })
